@@ -1,0 +1,14 @@
+# Пути к mingw-w64 (binutils + gcc) для GNU-таргета зафиксированы явно,
+# чтобы сборка не зависела от PATH и не ломалась на путях с пробелами/кириллицей
+# в профиле пользователя. dlltool нужен для import-библиотек WinAPI.
+[target.x86_64-pc-windows-gnu]
+linker = "C:\\PITH\\tools\\mingw64\\bin\\x86_64-w64-mingw32-gcc.exe"
+ar = "C:\\PITH\\tools\\mingw64\\bin\\ar.exe"
+rustflags = ["-Cdlltool=C:\\PITH\\tools\\mingw64\\bin\\dlltool.exe"]
+
+# Компилятор C/C++ для build-скриптов зависимостей (например, `ring` в TLS ureq).
+# Крейт `cc` уважает переменные CC_/CXX_/AR_<target> — так сборка не зависит от PATH.
+[env]
+CC_x86_64_pc_windows_gnu = "C:\\PITH\\tools\\mingw64\\bin\\gcc.exe"
+CXX_x86_64_pc_windows_gnu = "C:\\PITH\\tools\\mingw64\\bin\\g++.exe"
+AR_x86_64_pc_windows_gnu = "C:\\PITH\\tools\\mingw64\\bin\\ar.exe"

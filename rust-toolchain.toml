@@ -1,0 +1,5 @@
+# TVOICE использует самодостаточный GNU-тулчейн: не требует MSVC/Windows SDK и прав администратора.
+# При желании позже можно переключиться на stable-x86_64-pc-windows-msvc без изменений кода
+# (нужно доустановить "Desktop development with C++" в Visual Studio из-под администратора).
+[toolchain]
+channel = "stable-x86_64-pc-windows-gnu"

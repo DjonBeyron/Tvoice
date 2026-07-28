@@ -1,0 +1,63 @@
+[package]
+name = "tvoice"
+version = "1.9.1"
+edition = "2021"
+description = "TVOICE — локальная голосовая диктовка на Windows 11 (микрофон + офлайн-транскрибация Whisper)"
+
+[dependencies]
+# Быстрый и гибкий GUI: immediate-mode egui + оконный слой eframe (GPU-рендер через glow).
+eframe = { version = "0.28", default-features = true }
+egui = "0.28"
+
+# Работа с ошибками.
+anyhow = "1"
+
+# Чтение глобальных тумблеров приватности микрофона из реестра (ConsentStore).
+winreg = "0.52"
+
+# Загрузка моделей/бинарника Whisper по HTTPS (rustls, без OpenSSL — дружит с mingw).
+ureq = { version = "2", features = ["json"] }
+# Сохранение настроек + разбор ответа GitHub API.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Буфер обмена для надёжной вставки текста (Ctrl+V) — переносимее посимвольной эмуляции.
+arboard = "3"
+# Распаковка zip с пребилдом whisper.cpp.
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+# Официальные API Microsoft: WinRT (MediaCapture, AppCapability) + Win32 Core Audio (WASAPI).
+[dependencies.windows]
+version = "0.58"
+features = [
+    # --- WinRT: официальный путь запроса доступа ---
+    "Foundation",
+    "Media_Capture",
+    "Security_Authorization_AppCapabilityAccess",
+    # --- Win32 Core Audio (WASAPI): резервный "хардкорный" путь ---
+    "Win32_Foundation",
+    "Win32_System_SystemInformation",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
+    "Win32_Media_Audio",
+    "Win32_UI_Shell_PropertiesSystem",
+    "Win32_Devices_FunctionDiscovery",
+    # --- Глобальный хоткей + эмуляция клавиатуры (диктовка) ---
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+    # --- Нативный оверлей-индикатор у курсора ---
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    # --- Job Object: гарантированно гасит whisper-server вместе с приложением ---
+    "Win32_System_JobObjects",
+    "Win32_Security",
+    "Win32_System_Threading",
+]
+
+# Релизная сборка: компактный, оптимизированный бинарь.
+# panic = "unwind" (по умолчанию) — чтобы паника в фоновом потоке (например, при вставке)
+# не убивала всё приложение, а ловилась и логировалась.
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
