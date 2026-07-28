@@ -27,6 +27,38 @@ impl TvoiceApp {
             self.dictation_settings(ui);
             ui.add_space(6.0);
             self.dictation_status_card(ui);
+            ui.add_space(6.0);
+            self.tray_settings(ui);
+        });
+    }
+
+    /// Работа в фоне: значок в трее и запуск свёрнутым.
+    fn tray_settings(&mut self, ui: &mut egui::Ui) {
+        card(ui, |ui| {
+            ui.label(RichText::new("Фоновый режим").size(15.0).strong());
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(
+                    "Закрытие окна крестиком прячет TVOICE в трей — хоткей продолжает работать. \
+                     Правый клик по значку: начать диктовку или выйти.",
+                )
+                .size(11.0)
+                .color(theme::MUTED),
+            );
+            ui.add_space(6.0);
+            if ui
+                .checkbox(&mut self.start_in_tray, "Запускать свёрнутым в трей")
+                .changed()
+            {
+                self.dirty = true;
+            }
+            ui.add_space(6.0);
+            let btn = egui::Button::new(RichText::new("▾ Свернуть в трей").size(13.0))
+                .min_size(Vec2::new(0.0, 28.0));
+            if ui.add(btn).clicked() {
+                let ctx = self.ctx.clone();
+                self.hide_window(&ctx);
+            }
         });
     }
 

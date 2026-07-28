@@ -13,6 +13,7 @@ use crate::mic::{DeviceInfo, MicCommand, MicEngine, PermissionReport};
 use crate::models::{self, SharedDownload};
 use crate::overlay::Overlay;
 use crate::theme;
+use crate::tray::{Tray, TrayEvent};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Tab {
@@ -60,6 +61,20 @@ pub struct TvoiceApp {
     /// Флаг остановки активного потокового распознавания (Some — поток идёт).
     pub(crate) stream_stop: Option<Arc<AtomicBool>>,
     pub(crate) overlay: Overlay,
+    /// Значок в трее: приложение продолжает работать со спрятанным окном.
+    pub(crate) tray: Tray,
+    /// Окно спрятано в трей.
+    pub(crate) hidden: bool,
+    /// Выход запрошен из трея — крестик такой запрос перехватывать не должен.
+    pub(crate) quitting: bool,
+    /// Когда был прошлый кадр — чтобы заметить, что цикл со спрятанным окном встал.
+    pub(crate) last_frame: std::time::Instant,
+    /// Где стояло окно до сворачивания — туда и вернём.
+    pub(crate) window_pos: egui::Pos2,
+    /// Первый кадр: привести панель задач в соответствие состоянию окна.
+    pub(crate) first_frame: bool,
+    /// Прятать окно в трей при запуске.
+    pub(crate) start_in_tray: bool,
     /// Настройки изменились — сохранить в конце кадра.
     pub(crate) dirty: bool,
     /// Был ли хоткей в режиме захвата в прошлом кадре (для сохранения по завершении).
@@ -70,6 +85,7 @@ pub struct TvoiceApp {
 
 impl TvoiceApp {
     pub fn new(ctx: egui::Context) -> Self {
+        let ctx_for_tray = ctx.clone();
         let engine = MicEngine::spawn(ctx.clone());
         engine.send(MicCommand::RefreshPermission);
         engine.send(MicCommand::EnumerateDevices);
@@ -128,6 +144,16 @@ impl TvoiceApp {
             char_delay_us: cfg.char_delay_us,
             stream_stop: None,
             overlay: Overlay::spawn(),
+            tray: Tray::spawn(
+                &format!("TVOICE — диктовка: {}", cfg.hotkey().label()),
+                ctx_for_tray,
+            ),
+            hidden: cfg.start_in_tray,
+            quitting: false,
+            last_frame: std::time::Instant::now(),
+            window_pos: egui::pos2(200.0, 120.0),
+            first_frame: true,
+            start_in_tray: cfg.start_in_tray,
             dirty: false,
             was_capturing: false,
             was_downloading_engine: false,
@@ -146,7 +172,11 @@ impl TvoiceApp {
     }
 
     pub(crate) fn push_log(&mut self, s: impl Into<String>) {
-        self.log.push(s.into());
+        let s: String = s.into();
+        // Дублируем в файл: со свёрнутым в трей окном список в интерфейсе никто не видит,
+        // а ошибки захвата микрофона выглядят как «хоткей сработал, но ничего не произошло».
+        crate::logln!("ui: {s}");
+        self.log.push(s);
         if self.log.len() > 200 {
             let overflow = self.log.len() - 200;
             self.log.drain(0..overflow);
@@ -174,8 +204,106 @@ impl TvoiceApp {
             streaming: self.streaming_enabled,
             paste_mode: self.paste_mode,
             char_delay_us: self.char_delay_us,
+            start_in_tray: self.start_in_tray,
         };
         crate::config::save(&cfg);
+    }
+
+    /// Меню трея, закрытие окна в трей и восстановление из трея.
+    ///
+    /// Хоткей опрашивается отдельным потоком и работает со спрятанным окном; чтобы
+    /// приложение не «засыпало» без событий окна, просим перерисовку по таймеру.
+    pub(crate) fn handle_tray(&mut self, ctx: &egui::Context) {
+        if self.first_frame {
+            self.first_frame = false;
+            // Запуск сразу в трей: окно уже стоит за экраном, осталось убрать его кнопку.
+            if self.hidden {
+                crate::tray::set_taskbar(false);
+            }
+        }
+        // Запоминаем положение окна, пока оно на виду, — вернём туда же.
+        if !self.hidden {
+            if let Some(rect) = ctx.input(|i| i.viewport().outer_rect) {
+                self.window_pos = rect.min;
+            }
+        }
+        for ev in self.tray.drain() {
+            match ev {
+                TrayEvent::Show => self.show_window(ctx),
+                TrayEvent::Dictate => {
+                    if self.dictating {
+                        self.stop_dictation();
+                    } else {
+                        self.begin_dictation(self.insert_enabled);
+                    }
+                }
+                TrayEvent::Quit => {
+                    crate::logln!("выход по команде из трея");
+                    self.quitting = true;
+                    if self.dictating {
+                        self.stop_dictation();
+                    }
+                    self.persist();
+                    crate::server::shutdown();
+                    // Окно может быть спрятано — Close по невидимому окну не сработает.
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+        }
+        self.tray.set_dictating(self.dictating);
+
+        // Крестик не закрывает приложение, а прячет его в трей — иначе диктовка
+        // по глобальному хоткею умирала бы вместе с окном. Но выход из трея —
+        // это настоящий выход, его перехватывать нельзя.
+        if ctx.input(|i| i.viewport().close_requested()) {
+            if self.quitting {
+                crate::logln!("окно закрывается, приложение завершается");
+            } else {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.hide_window(ctx);
+            }
+        }
+    }
+
+    /// Не дать циклу UI заснуть: хоткей и меню трея обрабатываются в кадре, а со
+    /// спрятанным окном системных событий нет. Заодно видим в логе, если цикл встал.
+    pub(crate) fn keep_alive(&mut self, ctx: &egui::Context) {
+        let gap = self.last_frame.elapsed();
+        self.last_frame = std::time::Instant::now();
+        if self.hidden && !self.quitting && gap > std::time::Duration::from_secs(1) {
+            crate::logln!(
+                "трей: кадров не было {:.1}с — цикл засыпал (хоткей/меню могли не отвечать)",
+                gap.as_secs_f32()
+            );
+        }
+        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+    }
+
+    pub(crate) fn hide_window(&mut self, ctx: &egui::Context) {
+        if self.hidden {
+            return;
+        }
+        self.hidden = true;
+        crate::logln!("окно свёрнуто в трей");
+        // Окно уезжает за экран, а не прячется: см. tray::set_taskbar — по-настоящему
+        // спрятанное (или свёрнутое) окно останавливает цикл eframe, и вместе с ним
+        // перестают работать хоткей и меню трея.
+        crate::tray::set_taskbar(false);
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
+            -32000.0, -32000.0,
+        )));
+    }
+
+    pub(crate) fn show_window(&mut self, ctx: &egui::Context) {
+        if !self.hidden {
+            return;
+        }
+        self.hidden = false;
+        crate::logln!("окно восстановлено из трея");
+        crate::tray::set_taskbar(true);
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(self.window_pos));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
     }
 }
 
@@ -183,11 +311,15 @@ impl eframe::App for TvoiceApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.handle_events();
         self.handle_hotkey();
+        self.handle_tray(ctx);
 
         // Завершился захват хоткея → сохранить новую комбинацию.
         let capturing = self.hotkey.is_capturing();
         if self.was_capturing && !capturing {
             self.dirty = true;
+            // В подсказке значка держим актуальную комбинацию — из трея её больше негде увидеть.
+            self.tray
+                .set_tip(&format!("TVOICE — диктовка: {}", self.hotkey.label()));
         }
         self.was_capturing = capturing;
 
@@ -283,8 +415,9 @@ impl eframe::App for TvoiceApp {
             }
         }
 
-        // Постоянно опрашиваем: гарантирует обработку хоткея даже когда окно не в фокусе.
-        ctx.request_repaint_after(std::time::Duration::from_millis(120));
+        // Постоянно опрашиваем: гарантирует обработку хоткея даже когда окно не в фокусе
+        // и когда его вообще не видно (свёрнуто в трей).
+        self.keep_alive(ctx);
     }
 }
 

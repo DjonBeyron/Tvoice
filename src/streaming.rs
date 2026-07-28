@@ -37,6 +37,13 @@ const MAX_PHRASE: Duration = Duration::from_secs(12);
 const DRAIN: Duration = Duration::from_millis(250);
 /// Предел одной правки: больше — значит, мы уже не понимаем, что в окне.
 const MAX_REWRITE: usize = 120;
+/// Сколько последних слов фразы разрешено переписывать.
+///
+/// Дальше в прошлое не лезем. Whisper с каждым уточнением то ставит, то убирает запятую
+/// в середине фразы, а сравнение идёт посимвольно от начала — из-за одной такой правки
+/// стирался и набирался заново весь хвост, и текст в окне мигал. Начало фразы после
+/// нескольких слов уже не меняется по смыслу, поэтому его замораживаем.
+const TAIL_WORDS: usize = 4;
 
 pub fn run(
     live: LiveCapture,
@@ -215,10 +222,14 @@ struct Target {
     prior: bool,
     /// Что сейчас вставлено для текущей фразы (ровно то, что видит пользователь).
     shown: String,
+    /// То же по словам: начало фразы заморожено, правим только хвост.
+    words: Vec<String>,
     /// Весь текст сеанса (для окна приложения).
     full: String,
     /// Отметка нашей последней вставки — по ней понимаем, вмешался ли пользователь.
     stamp: u64,
+    /// Размер последней правки (стёрто, вставлено) — для лога и проверки.
+    last_edit: (usize, usize),
     status: SharedDictation,
     ctx: egui::Context,
 }
@@ -229,8 +240,10 @@ impl Target {
             insert,
             prior: false,
             shown: String::new(),
+            words: Vec::new(),
             full: String::new(),
             stamp: userinput::mark(),
+            last_edit: (0, 0),
             status,
             ctx,
         }
@@ -242,10 +255,22 @@ impl Target {
 
     /// Привести вставленный черновик к новой версии фразы.
     fn update(&mut self, phrase: &str) {
+        let fresh: Vec<&str> = phrase.split_whitespace().collect();
+        if fresh.is_empty() {
+            return;
+        }
+        // Всё, кроме последних слов, оставляем как есть — правки в глубине фразы
+        // (обычно скачущая запятая) не стоят перенабора всего хвоста.
+        let frozen = self.words.len().saturating_sub(TAIL_WORDS);
+        let mut next: Vec<String> = self.words[..frozen].to_vec();
+        if fresh.len() > frozen {
+            next.extend(fresh[frozen..].iter().map(|s| s.to_string()));
+        }
+        let body = next.join(" ");
         let want = if self.prior {
-            format!(" {phrase}")
+            format!(" {body}")
         } else {
-            phrase.to_string()
+            body
         };
         if want == self.shown {
             return;
@@ -272,6 +297,8 @@ impl Target {
             self.stamp = userinput::mark();
         }
         self.shown = want;
+        self.words = next;
+        self.last_edit = (back, add.chars().count());
         if let Ok(mut s) = self.status.lock() {
             s.last_text = format!("{}{}", self.full, self.shown);
         }
@@ -285,8 +312,24 @@ impl Target {
         }
         self.full.push_str(&self.shown);
         self.shown.clear();
+        self.words.clear();
         self.prior = true;
     }
+}
+
+/// Прогнать последовательность «черновиков» через ту же логику правки без вставки:
+/// показывает, сколько символов пришлось бы стереть и дописать на каждом шаге.
+/// Нужно, чтобы проверять числом, что текст в окне не переписывается целиком.
+pub fn simulate(drafts: &[String]) -> Vec<(usize, usize, String)> {
+    let ctx = egui::Context::default();
+    let mut target = Target::new(false, crate::dictation::new_shared(), ctx);
+    let mut out = Vec::new();
+    for d in drafts {
+        target.last_edit = (0, 0);
+        target.update(d);
+        out.push((target.last_edit.0, target.last_edit.1, target.shown.clone()));
+    }
+    out
 }
 
 /// Сколько аудио отправляем в whisper: речь плюс небольшой хвост тишины.

@@ -20,6 +20,7 @@ mod server;
 mod streaming;
 mod theme;
 mod transcribe;
+mod tray;
 mod ui_dictation;
 mod ui_mic;
 mod ui_models;
@@ -55,6 +56,16 @@ fn main() -> eframe::Result<()> {
         vad_test(secs);
         return Ok(());
     }
+    // Симуляция правок: `--rewrite-sim <черновик>…` печатает, сколько символов
+    // стёрлось бы и вставилось на каждом уточнении. Без окна и без вставки.
+    if let Some(i) = args.iter().position(|a| a == "--rewrite-sim") {
+        let drafts: Vec<String> = args[(i + 1).min(args.len())..].to_vec();
+        for (n, (back, add, shown)) in streaming::simulate(&drafts).iter().enumerate() {
+            println!("{n}: -{back} +{add} → {shown:?}");
+        }
+        return Ok(());
+    }
+
     // Автотест уточнения: подаём последовательность «черновиков» whisper и правим
     // вставленный текст той же логикой, что и поток. В окне должна остаться последняя версия.
     // `--inject-rewrite <окно> <черновик>…`
@@ -173,11 +184,20 @@ fn main() -> eframe::Result<()> {
 
     logln!("=== TVOICE v{} запуск GUI ===", env!("CARGO_PKG_VERSION"));
 
+    // Компактное окно: приложение фоновое, живёт в трее и работает по хоткею.
+    // «Свёрнуто в трей» = окно за экраном, а не спрятанное: спрятанное окно
+    // останавливает цикл eframe, и хоткей с меню трея перестают отвечать.
+    let hidden = config::load().start_in_tray;
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("TVOICE")
-            .with_inner_size([460.0, 720.0])
-            .with_min_inner_size([420.0, 560.0])
+            .with_inner_size([400.0, 600.0])
+            .with_min_inner_size([360.0, 460.0])
+            .with_position(if hidden {
+                egui::pos2(-32000.0, -32000.0)
+            } else {
+                egui::pos2(200.0, 120.0)
+            })
             .with_app_id("dev.pith.tvoice"),
         ..Default::default()
     };

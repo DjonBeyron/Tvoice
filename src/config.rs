@@ -24,6 +24,8 @@ pub struct Config {
     /// Пауза между символами при печати, мкс. Правится только руками в config.json:
     /// если какое-то приложение теряет/дублирует символы — увеличьте (8000 → 15000).
     pub char_delay_us: u32,
+    /// Запускаться сразу свёрнутым в трей.
+    pub start_in_tray: bool,
 }
 
 impl Default for Config {
@@ -42,6 +44,7 @@ impl Default for Config {
             streaming: true,
             paste_mode: crate::inject::MODE_AUTO,
             char_delay_us: crate::inject::DEFAULT_CHAR_DELAY_US,
+            start_in_tray: false,
         }
     }
 }
@@ -64,9 +67,18 @@ fn path() -> PathBuf {
 }
 
 pub fn load() -> Config {
-    match std::fs::read_to_string(path()) {
-        Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
-        Err(_) => Config::default(),
+    let Ok(s) = std::fs::read_to_string(path()) else {
+        return Config::default();
+    };
+    // Редакторы (и PowerShell) любят сохранять UTF-8 с BOM, а serde на нём спотыкается.
+    // Молча откатываться к умолчаниям нельзя: пользователь потеряет хоткей и выбор модели
+    // и не поймёт почему — поэтому о поломке настроек говорим в лог.
+    match serde_json::from_str(s.trim_start_matches('\u{feff}')) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            crate::logln!("config: не разобрать config.json ({e}) — беру настройки по умолчанию");
+            Config::default()
+        }
     }
 }
 

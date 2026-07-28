@@ -1,6 +1,6 @@
 [package]
 name = "tvoice"
-version = "1.9.1"
+version = "1.10.2"
 edition = "2021"
 description = "TVOICE — локальная голосовая диктовка на Windows 11 (микрофон + офлайн-транскрибация Whisper)"
 
@@ -48,6 +48,8 @@ features = [
     # --- Нативный оверлей-индикатор у курсора ---
     "Win32_Graphics_Gdi",
     "Win32_System_LibraryLoader",
+    # --- Значок в области уведомлений (трей) ---
+    "Win32_UI_Shell",
     # --- Job Object: гарантированно гасит whisper-server вместе с приложением ---
     "Win32_System_JobObjects",
     "Win32_Security",

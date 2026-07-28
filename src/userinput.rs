@@ -86,11 +86,14 @@ unsafe extern "system" fn kb_proc(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT 
 
 unsafe extern "system" fn mouse_proc(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     // Движение мыши игнорируем — курсор ввода переставляют кликом.
-    let click = matches!(
-        wp.0 as u32,
-        WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN
-    );
-    if code >= 0 && click {
+    // Кнопка, назначенная хоткеем, тоже не в счёт: ей диктовку и останавливают.
+    let vk = match wp.0 as u32 {
+        WM_LBUTTONDOWN => 0x01,
+        WM_RBUTTONDOWN => 0x02,
+        WM_MBUTTONDOWN => 0x04,
+        _ => 0,
+    };
+    if code >= 0 && vk != 0 && vk != IGNORE_VK.load(Ordering::Relaxed) {
         let info = &*(lp.0 as *const MSLLHOOKSTRUCT);
         if info.flags & LLMHF_INJECTED == 0 {
             LAST.store(now_ms(), Ordering::Relaxed);
