@@ -8,6 +8,7 @@ use crate::app::TvoiceApp;
 use crate::dictation;
 use crate::hotkey::HotkeyEvent;
 use crate::mic::{LiveCapture, MicCommand, MicEvent};
+use crate::tray::TrayEvent;
 use crate::models;
 
 impl TvoiceApp {
@@ -187,5 +188,102 @@ impl TvoiceApp {
             crate::logln!("стоп диктовки → распознавание");
             self.engine.send(MicCommand::StopCapture);
         }
+    }
+
+    /// Меню трея, закрытие окна в трей и восстановление из трея.
+    ///
+    /// Хоткей опрашивается отдельным потоком и работает со спрятанным окном; чтобы
+    /// приложение не «засыпало» без событий окна, просим перерисовку по таймеру.
+    pub(crate) fn handle_tray(&mut self, ctx: &egui::Context) {
+        if self.first_frame {
+            self.first_frame = false;
+            // Запуск сразу в трей: окно уже стоит за экраном, осталось убрать его кнопку.
+            if self.hidden {
+                crate::tray::set_taskbar(false);
+            }
+        }
+        // Запоминаем положение окна, пока оно на виду, — вернём туда же.
+        if !self.hidden {
+            if let Some(rect) = ctx.input(|i| i.viewport().outer_rect) {
+                self.window_pos = rect.min;
+            }
+        }
+        for ev in self.tray.drain() {
+            match ev {
+                TrayEvent::Show => self.show_window(ctx),
+                TrayEvent::Dictate => {
+                    if self.dictating {
+                        self.stop_dictation();
+                    } else {
+                        self.begin_dictation(self.insert_enabled);
+                    }
+                }
+                TrayEvent::Quit => {
+                    crate::logln!("выход по команде из трея");
+                    self.quitting = true;
+                    if self.dictating {
+                        self.stop_dictation();
+                    }
+                    self.persist();
+                    crate::server::shutdown();
+                    // Окно может быть спрятано — Close по невидимому окну не сработает.
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+        }
+        self.tray.set_dictating(self.dictating);
+
+        // Крестик не закрывает приложение, а прячет его в трей — иначе диктовка
+        // по глобальному хоткею умирала бы вместе с окном. Но выход из трея —
+        // это настоящий выход, его перехватывать нельзя.
+        if ctx.input(|i| i.viewport().close_requested()) {
+            if self.quitting {
+                crate::logln!("окно закрывается, приложение завершается");
+            } else {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.hide_window(ctx);
+            }
+        }
+    }
+
+    /// Не дать циклу UI заснуть: хоткей и меню трея обрабатываются в кадре, а со
+    /// спрятанным окном системных событий нет. Заодно видим в логе, если цикл встал.
+    pub(crate) fn keep_alive(&mut self, ctx: &egui::Context) {
+        let gap = self.last_frame.elapsed();
+        self.last_frame = std::time::Instant::now();
+        if self.hidden && !self.quitting && gap > std::time::Duration::from_secs(1) {
+            crate::logln!(
+                "трей: кадров не было {:.1}с — цикл засыпал (хоткей/меню могли не отвечать)",
+                gap.as_secs_f32()
+            );
+        }
+        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+    }
+
+    pub(crate) fn hide_window(&mut self, ctx: &egui::Context) {
+        if self.hidden {
+            return;
+        }
+        self.hidden = true;
+        crate::logln!("окно свёрнуто в трей");
+        // Окно уезжает за экран, а не прячется: см. tray::set_taskbar — по-настоящему
+        // спрятанное (или свёрнутое) окно останавливает цикл eframe, и вместе с ним
+        // перестают работать хоткей и меню трея.
+        crate::tray::set_taskbar(false);
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
+            -32000.0, -32000.0,
+        )));
+    }
+
+    pub(crate) fn show_window(&mut self, ctx: &egui::Context) {
+        if !self.hidden {
+            return;
+        }
+        self.hidden = false;
+        crate::logln!("окно восстановлено из трея");
+        crate::tray::set_taskbar(true);
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(self.window_pos));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
     }
 }

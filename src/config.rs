@@ -26,6 +26,10 @@ pub struct Config {
     pub char_delay_us: u32,
     /// Запускаться сразу свёрнутым в трей.
     pub start_in_tray: bool,
+    /// Ставить индикатор к курсору ввода вместо указателя мыши.
+    /// Правится только руками: в приложениях на Chromium точной каретки нет и индикатор
+    /// встаёт к рамке поля ввода — не всегда туда, где ждёшь.
+    pub anchor_to_caret: bool,
 }
 
 impl Default for Config {
@@ -45,6 +49,7 @@ impl Default for Config {
             paste_mode: crate::inject::MODE_AUTO,
             char_delay_us: crate::inject::DEFAULT_CHAR_DELAY_US,
             start_in_tray: false,
+            anchor_to_caret: false,
         }
     }
 }

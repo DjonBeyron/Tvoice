@@ -1,35 +1,45 @@
-//! Индикатор у курсора — нативное Win32-окно (layered, topmost, click-through).
+//! Индикатор диктовки — нативное Win32-окно (layered, topmost, click-through).
 //!
-//! Создаётся один раз в своём потоке и просто двигается за курсором, пульсируя по уровню звука.
-//! Не зависит от eframe/GL — надёжно работает, даже когда основное окно в фоне.
+//! Живёт в своём потоке и не зависит от eframe/GL: работает, даже когда основное окно
+//! свёрнуто в трей. Показывает три точки, пульсирующие в такт голосу.
+//!
+//! Здесь только окно, позиционирование и превращение громкости микрофона в амплитуду;
+//! сам рисунок кадра — в `hud.rs`.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
-use windows::Win32::Graphics::Gdi::{
-    CreateSolidBrush, DeleteObject, Ellipse, FillRect, GetDC, GetStockObject, ReleaseDC,
-    SelectObject, HBRUSH, HGDIOBJ, NULL_PEN,
-};
+use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetCursorPos,
-    PeekMessageW, RegisterClassW, SetLayeredWindowAttributes, SetWindowPos, ShowWindow,
-    TranslateMessage, HMENU, HWND_TOPMOST, LWA_COLORKEY, MSG, PM_REMOVE, SWP_NOACTIVATE,
-    SWP_SHOWWINDOW, SW_HIDE, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetCursorPos,
+    PeekMessageW, RegisterClassW, ShowWindow, HMENU, MSG, PM_REMOVE, SW_HIDE, SW_SHOWNOACTIVATE,
+    WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_EX_TRANSPARENT, WS_POPUP,
 };
+use crate::hud::{Canvas, H};
 
-const SIZE: i32 = 60;
-/// Цвет-ключ прозрачности (magenta) — заведомо не встречается в индикаторе.
-const KEY: u32 = 0x00FF_00FF;
+/// Насколько громче уровня тишины должен быть пик, чтобы точка вытянулась на всю высоту.
+const VOICE_RANGE: f32 = 0.22;
+
+/// Привязывать индикатор к курсору ввода вместо указателя мыши.
+/// По умолчанию выключено: в приложениях на Chromium точной каретки нет, и индикатор
+/// встаёт к рамке поля ввода, что не всегда там, где ждёшь. Правится в config.json.
+static ANCHOR_CARET: AtomicBool = AtomicBool::new(false);
+
+pub fn set_anchor_caret(on: bool) {
+    ANCHOR_CARET.store(on, Ordering::Relaxed);
+}
 
 struct State {
     visible: AtomicBool,
     level_bits: AtomicU32,
+    /// Счётчик уровня прямо из захвата — чтобы брать громкость 30 раз в секунду,
+    /// а не с частотой перерисовки окна (в трее это всего 10 раз).
+    mic: std::sync::OnceLock<Arc<AtomicU32>>,
 }
 
 pub struct Overlay {
@@ -42,6 +52,7 @@ impl Overlay {
         let state = Arc::new(State {
             visible: AtomicBool::new(false),
             level_bits: AtomicU32::new(0),
+            mic: std::sync::OnceLock::new(),
         });
         let stop = Arc::new(AtomicBool::new(false));
         let st = Arc::clone(&state);
@@ -59,6 +70,11 @@ impl Overlay {
     pub fn set_level(&self, level: f32) {
         self.state.level_bits.store(level.to_bits(), Ordering::Relaxed);
     }
+
+    /// Подключить счётчик уровня микрофона напрямую.
+    pub fn attach_level(&self, mic: Arc<AtomicU32>) {
+        let _ = self.state.mic.set(mic);
+    }
 }
 
 impl Drop for Overlay {
@@ -67,21 +83,15 @@ impl Drop for Overlay {
     }
 }
 
-fn rgb(r: u8, g: u8, b: u8) -> COLORREF {
-    COLORREF((r as u32) | ((g as u32) << 8) | ((b as u32) << 16))
-}
-
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
 }
 
 unsafe fn run(state: Arc<State>, stop: Arc<AtomicBool>) {
-    let hinst = match GetModuleHandleW(None) {
-        Ok(h) => h,
-        Err(_) => return,
+    let Ok(hinst) = GetModuleHandleW(None) else {
+        return;
     };
     let class_name = windows::core::w!("TvoiceOverlay");
-
     let wc = WNDCLASSW {
         lpfnWndProc: Some(wndproc),
         hInstance: HINSTANCE(hinst.0),
@@ -90,108 +100,137 @@ unsafe fn run(state: Arc<State>, stop: Arc<AtomicBool>) {
     };
     RegisterClassW(&wc);
 
-    let ex_style = WS_EX_LAYERED
-        | WS_EX_TRANSPARENT
-        | WS_EX_TOPMOST
-        | WS_EX_TOOLWINDOW
-        | WS_EX_NOACTIVATE;
-
-    let hwnd = match CreateWindowExW(
+    let ex_style =
+        WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+    let Ok(hwnd) = CreateWindowExW(
         ex_style,
         class_name,
         PCWSTR::null(),
         WS_POPUP,
         0,
         0,
-        SIZE,
-        SIZE,
+        crate::hud::W,
+        H,
         HWND::default(),
         HMENU::default(),
         HINSTANCE(hinst.0),
         None,
-    ) {
-        Ok(h) => h,
-        Err(_) => return,
+    ) else {
+        return;
     };
 
-    let _ = SetLayeredWindowAttributes(hwnd, COLORREF(KEY), 0, LWA_COLORKEY);
+    let Some(canvas) = Canvas::new() else {
+        crate::logln!("overlay: не удалось создать буфер рисования");
+        return;
+    };
 
-    // GDI-объекты создаём ОДИН РАЗ (без churn create/delete в цикле — это и корёжило кучу).
-    let key_brush = CreateSolidBrush(COLORREF(KEY));
-    let brushes = [
-        CreateSolidBrush(rgb(0x37, 0xD6, 0x7A)),
-        CreateSolidBrush(rgb(0xE7, 0xB4, 0x16)),
-        CreateSolidBrush(rgb(0xE5, 0x5A, 0x5A)),
-    ];
-    let null_pen = GetStockObject(NULL_PEN);
-
+    let t0 = Instant::now();
+    let mut smooth = 0.0f32;
+    let mut floor = 0.01f32; // плавающий уровень тишины этого микрофона
     let mut shown = false;
+    let mut last_source = ""; // прошлый источник позиции (для лога)
+
     while !stop.load(Ordering::Relaxed) {
         let mut msg = MSG::default();
         while PeekMessageW(&mut msg, hwnd, 0, 0, PM_REMOVE).as_bool() {
-            let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
 
         if state.visible.load(Ordering::Relaxed) {
-            let mut pt = POINT::default();
-            if GetCursorPos(&mut pt).is_ok() {
-                let _ = SetWindowPos(
-                    hwnd,
-                    HWND_TOPMOST,
-                    pt.x + 18,
-                    pt.y - SIZE - 6,
-                    SIZE,
-                    SIZE,
-                    SWP_NOACTIVATE | SWP_SHOWWINDOW,
-                );
+            // Поиск курсора ввода идёт в своём потоке и только пока индикатор виден:
+            // вызовы UI Automation лезут в чужой процесс и стоят десятки миллисекунд.
+            if ANCHOR_CARET.load(Ordering::Relaxed) {
+                crate::caret::watch();
+                crate::caret::set_active(true);
+            }
+            let raw = match state.mic.get() {
+                Some(mic) => f32::from_bits(mic.load(Ordering::Relaxed)),
+                None => f32::from_bits(state.level_bits.load(Ordering::Relaxed)),
+            };
+            let voice = voice_amount(raw.clamp(0.0, 1.0), &mut floor);
+            // Атака мгновенная, спад быстрый: точки должны прыгать на каждом слоге,
+            // а не переливаться. Сглаживать нарастание нельзя — от этого «вязкость».
+            smooth = if voice > smooth {
+                voice
+            } else {
+                smooth * 0.6 + voice * 0.4
+            };
+
+            let (pos, source) = anchor();
+            if source != last_source {
+                crate::logln!("overlay: привязка — {source}, позиция {pos:?}");
+                last_source = source;
+            }
+            canvas.draw(t0.elapsed().as_secs_f32(), smooth);
+            canvas.present(hwnd, pos);
+            if !shown {
+                // Окно создано скрытым, а UpdateLayeredWindow само его не показывает.
+                let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
                 shown = true;
-                let level = f32::from_bits(state.level_bits.load(Ordering::Relaxed));
-                paint(hwnd, level, key_brush, &brushes, null_pen);
             }
         } else if shown {
             let _ = ShowWindow(hwnd, SW_HIDE);
             shown = false;
+            last_source = "";
+            crate::caret::set_active(false);
         }
 
         thread::sleep(Duration::from_millis(33));
     }
 
-    let _ = DeleteObject(HGDIOBJ(key_brush.0));
-    for b in brushes {
-        let _ = DeleteObject(HGDIOBJ(b.0));
-    }
     let _ = DestroyWindow(hwnd);
 }
 
-unsafe fn paint(hwnd: HWND, level: f32, key_brush: HBRUSH, brushes: &[HBRUSH; 3], null_pen: HGDIOBJ) {
-    let hdc = GetDC(hwnd);
-    if hdc.is_invalid() {
-        return;
-    }
-    let mut rc = RECT::default();
-    let _ = GetClientRect(hwnd, &mut rc);
-
-    // Фон — цвет-ключ (станет прозрачным).
-    FillRect(hdc, &rc, key_brush);
-
-    let lvl = level.clamp(0.0, 1.0);
-    let idx = if lvl < 0.6 {
-        0
-    } else if lvl < 0.85 {
-        1
+/// Привести пиковый уровень микрофона к 0…1, отсчитывая от уровня тишины.
+///
+/// Постоянное усиление тут не работает: у пика фона и пика речи разница всего в
+/// несколько раз, поэтому любой множитель либо «зажигает» точки в тишине, либо
+/// упирается в потолок на первом же слове. Поэтому держим плавающую оценку тишины
+/// (вниз быстро, вверх еле-еле) и растягиваем в 0…1 то, что над ней.
+fn voice_amount(level: f32, floor: &mut f32) -> f32 {
+    *floor = if level < *floor {
+        *floor * 0.9 + level * 0.1
     } else {
-        2
+        (*floor * 1.0005).min(0.08)
     };
-    let old_brush = SelectObject(hdc, HGDIOBJ(brushes[idx].0));
-    let old_pen = SelectObject(hdc, null_pen);
-
-    let cx = rc.right / 2;
-    let cy = rc.bottom / 2;
-    let r = 8 + (lvl * 18.0) as i32;
-    let _ = Ellipse(hdc, cx - r, cy - r, cx + r, cy + r);
-
-    SelectObject(hdc, old_brush);
-    SelectObject(hdc, old_pen);
-    ReleaseDC(hwnd, hdc);
+    let quiet = (*floor * 2.0).max(0.012);
+    let loud = quiet + VOICE_RANGE;
+    // Показатель 0.65 вместо корня: чуть меньше сжатия — громкое и тихое различимее.
+    ((level - quiet) / (loud - quiet)).clamp(0.0, 1.0).powf(0.65)
 }
+
+
+/// Прогнать последовательность пиковых уровней через ту же математику, что и живой
+/// индикатор: приведение к 0…1 и огибающая. Нужно, чтобы проверять резкость отклика
+/// числами, а не на глаз.
+pub fn simulate_pulse(levels: &[f32]) -> Vec<f32> {
+    let mut floor = 0.01f32;
+    let mut smooth = 0.0f32;
+    levels
+        .iter()
+        .map(|&l| {
+            let voice = voice_amount(l.clamp(0.0, 1.0), &mut floor);
+            smooth = if voice > smooth {
+                voice
+            } else {
+                smooth * 0.6 + voice * 0.4
+            };
+            smooth
+        })
+        .collect()
+}
+
+/// Куда поставить индикатор: к курсору ввода (мигающей палочке), а если его нет —
+/// к указателю мыши. `true` во втором элементе — позиция взята от курсора ввода.
+unsafe fn anchor() -> ((i32, i32), &'static str) {
+    if ANCHOR_CARET.load(Ordering::Relaxed) {
+        if let Some((p, source)) = crate::caret::position() {
+            // Чуть ниже и правее строки ввода, чтобы не перекрывать сам текст.
+            return ((p.0 + 6, p.1 + 4), source);
+        }
+    }
+    let mut pt = POINT::default();
+    let _ = GetCursorPos(&mut pt);
+    ((pt.x + 14, pt.y - H - 2), "мышь")
+}
+

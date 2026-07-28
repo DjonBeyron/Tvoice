@@ -113,6 +113,12 @@ impl MicEngine {
     }
 
     /// Текущий пиковый уровень 0.0..=1.0.
+    /// Сам счётчик уровня: индикатор диктовки читает его напрямую и со своей частотой,
+    /// не завися от того, как часто перерисовывается интерфейс.
+    pub fn level_handle(&self) -> Arc<AtomicU32> {
+        Arc::clone(&self.level_bits)
+    }
+
     pub fn level(&self) -> f32 {
         f32::from_bits(self.level_bits.load(Ordering::Relaxed))
     }

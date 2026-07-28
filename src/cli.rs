@@ -1,0 +1,325 @@
+//! Диагностические режимы командной строки: работают без GUI и служат для проверки
+//! железа и вставки на живой системе. Вынесены из `main.rs`, чтобы тот оставался
+//! коротким: запуск приложения и ничего больше.
+
+use crate::{audio, mic, models, selftest, server, vad};
+
+/// Разобрать аргументы и выполнить диагностический режим.
+/// `true` — режим отработал, приложение запускать не нужно.
+pub fn dispatch(args: &[String]) -> bool {
+        if selftest::dispatch(args) {
+            return true;
+        }
+        // `tvoice --probe` печатает статус доступа к микрофону и список устройств
+        // захвата. Удобно для проверки на «капризной» системе.
+        if args.iter().any(|a| a == "--probe") {
+            probe();
+            return true;
+        }
+        if args.iter().any(|a| a == "--net-check") {
+            net_check();
+            return true;
+        }
+        if args.iter().any(|a| a == "--selftest-stt") {
+            selftest_stt();
+            return true;
+        }
+        if args.iter().any(|a| a == "--stream-test") {
+            stream_test();
+            return true;
+        }
+        if let Some(i) = args.iter().position(|a| a == "--vad-test") {
+            let secs = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(6);
+            vad_test(secs);
+            return true;
+        }
+        if args.iter().any(|a| a == "--rec-test") {
+            let secs = args
+                .iter()
+                .position(|a| a == "--rec-test")
+                .and_then(|i| args.get(i + 1))
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(3);
+            record_test(secs);
+            return true;
+        }
+    false
+}
+
+/// Headless-самопроверка доступа к микрофону.
+fn probe() {
+    let _com = mic::wasapi::ComGuard::init_mta();
+
+    println!("== TVOICE probe ==");
+    let report = mic::permission::report();
+    println!("Итоговый статус: {}", report.effective.label());
+    for line in &report.details {
+        println!("  {line}");
+    }
+
+    match mic::wasapi::enumerate_capture_devices() {
+        Ok(devs) => {
+            println!("Устройств захвата: {}", devs.len());
+            for d in &devs {
+                let mark = if d.is_default { " * default" } else { "" };
+                println!("  - {}{mark}\n    id: {}", d.name, d.id);
+            }
+        }
+        Err(e) => println!("Ошибка перечисления устройств: {e}"),
+    }
+
+    println!("-- скан инициализации захвата --");
+    match mic::wasapi::scan_capture_init() {
+        Ok(lines) => {
+            for l in lines {
+                println!("{l}");
+            }
+        }
+        Err(e) => println!("scan error: {e}"),
+    }
+}
+
+/// Проверка сетевых источников (без больших загрузок).
+fn net_check() {
+    println!("== TVOICE net-check ==");
+    match models::download::find_binary_zip_url() {
+        Ok(url) => println!("whisper.cpp zip: {url}"),
+        Err(e) => println!("whisper.cpp zip: ОШИБКА {e}"),
+    }
+    let m = &models::CATALOG[0];
+    let url = m.url();
+    match ureq::head(&url).set("User-Agent", "tvoice").call() {
+        Ok(r) => println!(
+            "модель {} → HTTP {} (Content-Length: {})",
+            m.file,
+            r.status(),
+            r.header("Content-Length").unwrap_or("?")
+        ),
+        Err(e) => println!("модель {}: ОШИБКА {e}", m.file),
+    }
+}
+
+/// Полный сквозной самотест STT: скачать движок+tiny-модель, записать 3с, распознать.
+fn selftest_stt() {
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::sync::mpsc::channel;
+    use std::sync::Arc;
+
+    println!("== TVOICE selftest-stt ==");
+    let ctx = egui::Context::default();
+    let dl = models::new_shared();
+
+    if models::whisper_exe().is_none() {
+        println!("Скачиваю whisper.cpp…");
+        models::download::start_whisper_binary(false, dl.clone(), ctx.clone());
+        wait_download(&dl);
+    }
+    println!("whisper.exe: {:?}", models::whisper_exe());
+
+    let tiny = &models::CATALOG[0];
+    if !models::is_downloaded(tiny.file) {
+        println!("Скачиваю {} …", tiny.file);
+        models::download::start_model(tiny, dl.clone(), ctx.clone());
+        wait_download(&dl);
+    }
+    println!("модель {} загружена: {}", tiny.file, models::is_downloaded(tiny.file));
+
+    let temp = models::app_dir().join("temp");
+    let _ = std::fs::create_dir_all(&temp);
+    let wav = temp.join("selftest.wav");
+
+    println!("Запись 3с — говорите в микрофон…");
+    let stop = Arc::new(AtomicBool::new(false));
+    let level = Arc::new(AtomicU32::new(0));
+    let (tx, _rx) = channel();
+    let stop_t = Arc::clone(&stop);
+    let wavc = wav.clone();
+    let h = std::thread::spawn(move || {
+        let _ = mic::wasapi::run_capture(None, Some(wavc), None, stop_t, level, tx);
+    });
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    stop.store(true, Ordering::Relaxed);
+    let _ = h.join();
+
+    let wav16 = temp.join("selftest16k.wav");
+    if let Err(e) = audio::wav_to_16k_mono(&wav, &wav16) {
+        println!("ресемпл: ОШИБКА {e}");
+        return;
+    }
+    // Дважды через резидентный сервер: 1-й запуск включает старт сервера, 2-й — «тёплый».
+    for pass in 1..=2 {
+        let t0 = std::time::Instant::now();
+        match server::transcribe(&wav16, tiny.file, "ru") {
+            Ok(t) => println!(
+                "проход {pass}: «{t}» за {:.2}с",
+                t0.elapsed().as_secs_f32()
+            ),
+            Err(e) => println!("проход {pass}: ОШИБКА {e}"),
+        }
+    }
+    server::shutdown();
+    let _ = std::fs::remove_file(&wav);
+    let _ = std::fs::remove_file(&wav16);
+}
+
+/// Диагностика микрофона и VAD: пишем `secs` секунд и раскладываем запись по полочкам —
+/// частота, уровень фона, порог, найденные участки речи. Всё уходит в tvoice.log.
+fn vad_test(secs: u64) {
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::sync::mpsc::channel;
+    use std::sync::{Arc, Mutex};
+
+    println!("== TVOICE vad-test: говорите {secs} с ==");
+    let live = mic::LiveCapture {
+        buf: Arc::new(Mutex::new(Vec::new())),
+        rate: Arc::new(AtomicU32::new(16_000)),
+    };
+    let stop = Arc::new(AtomicBool::new(false));
+    let level = Arc::new(AtomicU32::new(0));
+    let (tx, _rx) = channel();
+    let (stop_t, live_t, level_t) = (stop.clone(), live.clone(), level.clone());
+    let h = std::thread::spawn(move || {
+        let _ = mic::wasapi::run_capture(None, None, Some(live_t), stop_t, level_t, tx);
+    });
+    std::thread::sleep(std::time::Duration::from_secs(secs));
+    stop.store(true, Ordering::Relaxed);
+    let _ = h.join();
+
+    let (samples, rate) = {
+        let b = live.buf.lock().unwrap();
+        (b.clone(), live.rate.load(Ordering::Relaxed).max(1) as usize)
+    };
+    logln!(
+        "vad-test: {} сэмплов @ {rate} Гц = {:.1}с",
+        samples.len(),
+        samples.len() as f32 / rate as f32
+    );
+
+    let mut v = vad::Vad::new(rate);
+    v.feed(&samples);
+    let seg = v.segment(0);
+    let s = |n: usize| n as f32 / rate as f32;
+    logln!(
+        "vad-test: шум={:.4}±{:.4} порог={:.4} | речи {:.1}с, конец речи {:.1}с, хвост тишины {:.1}с",
+        v.noise(),
+        v.dev(),
+        v.on(),
+        s(seg.speech),
+        s(seg.speech_end),
+        s(seg.silence)
+    );
+
+    // Профиль громкости по полсекунды — видно, где была речь, а где фон.
+    let step = rate / 2;
+    let mut line = String::new();
+    for (i, chunk) in samples.chunks(step.max(1)).enumerate() {
+        let rms = (chunk.iter().map(|x| x * x).sum::<f32>() / chunk.len().max(1) as f32).sqrt();
+        line.push_str(&format!("{:.1}с={:.4} ", i as f32 / 2.0, rms));
+    }
+    logln!("vad-test: профиль по 0.5с: {line}");
+
+    // Тот же звук, что ушёл бы в whisper.
+    let tmp = models::app_dir().join("temp");
+    let _ = std::fs::create_dir_all(&tmp);
+    let wav = tmp.join("vadtest16k.wav");
+    match audio::write_16k_wav_from_mono(&samples, rate as u32, &wav) {
+        Ok(()) => logln!("vad-test: wav сохранён: {}", wav.display()),
+        Err(e) => logln!("vad-test: ресемпл ОШИБКА: {e}"),
+    }
+    println!("готово, подробности в tvoice.log");
+}
+
+/// Проверка «живого» буфера: захват 4с → ресемпл → распознавание.
+fn stream_test() {
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::sync::mpsc::channel;
+    use std::sync::{Arc, Mutex};
+
+    println!("== TVOICE stream-test (говорите 4с) ==");
+    let live = mic::LiveCapture {
+        buf: Arc::new(Mutex::new(Vec::new())),
+        rate: Arc::new(AtomicU32::new(16_000)),
+    };
+    let stop = Arc::new(AtomicBool::new(false));
+    let level = Arc::new(AtomicU32::new(0));
+    let (tx, _rx) = channel();
+    let (stop_t, live_t, level_t) = (stop.clone(), live.clone(), level.clone());
+    let h = std::thread::spawn(move || {
+        let _ = mic::wasapi::run_capture(None, None, Some(live_t), stop_t, level_t, tx);
+    });
+    std::thread::sleep(std::time::Duration::from_secs(4));
+    stop.store(true, Ordering::Relaxed);
+    let _ = h.join();
+
+    let (samples, rate) = {
+        let b = live.buf.lock().unwrap();
+        (b.clone(), live.rate.load(Ordering::Relaxed))
+    };
+    println!("собрано сэмплов: {} @ {} Гц ({:.1} с)", samples.len(), rate, samples.len() as f32 / rate.max(1) as f32);
+    let tmp = models::app_dir().join("temp");
+    let _ = std::fs::create_dir_all(&tmp);
+    let wav = tmp.join("streamtest16k.wav");
+    if let Err(e) = audio::write_16k_wav_from_mono(&samples, rate, &wav) {
+        println!("ресемпл: ОШИБКА {e}");
+        return;
+    }
+    let tiny = &models::CATALOG[0];
+    match server::transcribe(&wav, tiny.file, "ru") {
+        Ok(t) => println!("РАСПОЗНАНО: «{t}»"),
+        Err(e) => println!("транскрибация: ОШИБКА {e}"),
+    }
+    server::shutdown();
+    let _ = std::fs::remove_file(&wav);
+}
+
+fn wait_download(dl: &models::SharedDownload) {
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let s = dl.lock().unwrap();
+        if s.active.is_none() {
+            if let Some(e) = &s.error {
+                println!("  ошибка загрузки: {e}");
+            }
+            break;
+        }
+    }
+}
+
+/// Headless-тест записи: пишет `secs` секунд с устройства по умолчанию в recordings/.
+fn record_test(secs: u64) {
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::sync::mpsc::channel;
+    use std::sync::Arc;
+
+    let dir = std::env::current_dir().unwrap_or_default().join("recordings");
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join(mic::wav::timestamp_filename());
+
+    println!("== TVOICE rec-test: {secs} с → {} ==", path.display());
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let level = Arc::new(AtomicU32::new(0));
+    let (tx, rx) = channel();
+
+    let stop_t = Arc::clone(&stop);
+    let level_t = Arc::clone(&level);
+    let path_t = path.clone();
+    let handle = std::thread::spawn(move || {
+        if let Err(e) = mic::wasapi::run_capture(None, Some(path_t), None, stop_t, level_t, tx) {
+            eprintln!("Ошибка записи: {e}");
+        }
+    });
+
+    for _ in 0..secs * 4 {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        println!("  уровень: {:.3}", f32::from_bits(level.load(Ordering::Relaxed)));
+    }
+    stop.store(true, Ordering::Relaxed);
+    let _ = handle.join();
+
+    for ev in rx.try_iter() {
+        if let mic::MicEvent::Log(s) | mic::MicEvent::Error(s) = ev {
+            println!("  {s}");
+        }
+    }
+}

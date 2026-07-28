@@ -13,7 +13,7 @@ use crate::mic::{DeviceInfo, MicCommand, MicEngine, PermissionReport};
 use crate::models::{self, SharedDownload};
 use crate::overlay::Overlay;
 use crate::theme;
-use crate::tray::{Tray, TrayEvent};
+use crate::tray::Tray;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Tab {
@@ -75,6 +75,8 @@ pub struct TvoiceApp {
     pub(crate) first_frame: bool,
     /// Прятать окно в трей при запуске.
     pub(crate) start_in_tray: bool,
+    /// Ставить индикатор к курсору ввода, а не к мыши (только из config.json).
+    pub(crate) anchor_to_caret: bool,
     /// Настройки изменились — сохранить в конце кадра.
     pub(crate) dirty: bool,
     /// Был ли хоткей в режиме захвата в прошлом кадре (для сохранения по завершении).
@@ -154,12 +156,17 @@ impl TvoiceApp {
             window_pos: egui::pos2(200.0, 120.0),
             first_frame: true,
             start_in_tray: cfg.start_in_tray,
+            anchor_to_caret: cfg.anchor_to_caret,
             dirty: false,
             was_capturing: false,
             was_downloading_engine: false,
         };
         crate::inject::set_mode(app.paste_mode);
         crate::inject::set_char_delay_us(app.char_delay_us);
+        crate::overlay::set_anchor_caret(cfg.anchor_to_caret);
+        // Индикатор читает громкость сам, минуя цикл интерфейса: в трее тот идёт
+        // 10 кадров в секунду, и пульсация от него получалась вялой.
+        app.overlay.attach_level(app.engine.level_handle());
         // Прогреваем whisper-server заранее, чтобы первая диктовка была быстрой.
         if let Some(id) = &app.selected_model {
             if let Some(m) = models::by_id(id) {
@@ -205,105 +212,9 @@ impl TvoiceApp {
             paste_mode: self.paste_mode,
             char_delay_us: self.char_delay_us,
             start_in_tray: self.start_in_tray,
+            anchor_to_caret: self.anchor_to_caret,
         };
         crate::config::save(&cfg);
-    }
-
-    /// Меню трея, закрытие окна в трей и восстановление из трея.
-    ///
-    /// Хоткей опрашивается отдельным потоком и работает со спрятанным окном; чтобы
-    /// приложение не «засыпало» без событий окна, просим перерисовку по таймеру.
-    pub(crate) fn handle_tray(&mut self, ctx: &egui::Context) {
-        if self.first_frame {
-            self.first_frame = false;
-            // Запуск сразу в трей: окно уже стоит за экраном, осталось убрать его кнопку.
-            if self.hidden {
-                crate::tray::set_taskbar(false);
-            }
-        }
-        // Запоминаем положение окна, пока оно на виду, — вернём туда же.
-        if !self.hidden {
-            if let Some(rect) = ctx.input(|i| i.viewport().outer_rect) {
-                self.window_pos = rect.min;
-            }
-        }
-        for ev in self.tray.drain() {
-            match ev {
-                TrayEvent::Show => self.show_window(ctx),
-                TrayEvent::Dictate => {
-                    if self.dictating {
-                        self.stop_dictation();
-                    } else {
-                        self.begin_dictation(self.insert_enabled);
-                    }
-                }
-                TrayEvent::Quit => {
-                    crate::logln!("выход по команде из трея");
-                    self.quitting = true;
-                    if self.dictating {
-                        self.stop_dictation();
-                    }
-                    self.persist();
-                    crate::server::shutdown();
-                    // Окно может быть спрятано — Close по невидимому окну не сработает.
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
-            }
-        }
-        self.tray.set_dictating(self.dictating);
-
-        // Крестик не закрывает приложение, а прячет его в трей — иначе диктовка
-        // по глобальному хоткею умирала бы вместе с окном. Но выход из трея —
-        // это настоящий выход, его перехватывать нельзя.
-        if ctx.input(|i| i.viewport().close_requested()) {
-            if self.quitting {
-                crate::logln!("окно закрывается, приложение завершается");
-            } else {
-                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                self.hide_window(ctx);
-            }
-        }
-    }
-
-    /// Не дать циклу UI заснуть: хоткей и меню трея обрабатываются в кадре, а со
-    /// спрятанным окном системных событий нет. Заодно видим в логе, если цикл встал.
-    pub(crate) fn keep_alive(&mut self, ctx: &egui::Context) {
-        let gap = self.last_frame.elapsed();
-        self.last_frame = std::time::Instant::now();
-        if self.hidden && !self.quitting && gap > std::time::Duration::from_secs(1) {
-            crate::logln!(
-                "трей: кадров не было {:.1}с — цикл засыпал (хоткей/меню могли не отвечать)",
-                gap.as_secs_f32()
-            );
-        }
-        ctx.request_repaint_after(std::time::Duration::from_millis(100));
-    }
-
-    pub(crate) fn hide_window(&mut self, ctx: &egui::Context) {
-        if self.hidden {
-            return;
-        }
-        self.hidden = true;
-        crate::logln!("окно свёрнуто в трей");
-        // Окно уезжает за экран, а не прячется: см. tray::set_taskbar — по-настоящему
-        // спрятанное (или свёрнутое) окно останавливает цикл eframe, и вместе с ним
-        // перестают работать хоткей и меню трея.
-        crate::tray::set_taskbar(false);
-        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
-            -32000.0, -32000.0,
-        )));
-    }
-
-    pub(crate) fn show_window(&mut self, ctx: &egui::Context) {
-        if !self.hidden {
-            return;
-        }
-        self.hidden = false;
-        crate::logln!("окно восстановлено из трея");
-        crate::tray::set_taskbar(true);
-        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(self.window_pos));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
     }
 }
 
