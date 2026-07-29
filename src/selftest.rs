@@ -7,6 +7,31 @@ use crate::{hud, inject, overlay, streaming};
 
 /// Разобрать аргументы самотестов. `true` — режим отработал.
 pub fn dispatch(args: &[String]) -> bool {
+        // Стоимость приведения звука к 16 кГц: `--resample-bench [секунд]`.
+        if let Some(i) = args.iter().position(|a| a == "--resample-bench") {
+            let secs: usize = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(12);
+            let rate = 48_000usize;
+            // Шум по всей полосе — худший случай для фильтра.
+            let mut x = 12345u32;
+            let noise: Vec<f32> = (0..rate * secs)
+                .map(|_| {
+                    x = x.wrapping_mul(1664525).wrapping_add(1013904223);
+                    (x >> 8) as f32 / 8_388_608.0 - 1.0
+                })
+                .collect();
+            let tmp = crate::models::app_dir().join("temp");
+            let _ = std::fs::create_dir_all(&tmp);
+            let wav = tmp.join("resample_bench.wav");
+            let t0 = std::time::Instant::now();
+            let _ = crate::audio::write_16k_wav_from_mono(&noise, rate as u32, &wav);
+            println!(
+                "{secs}с звука @48кГц → 16кГц за {:.0}мс",
+                t0.elapsed().as_secs_f32() * 1000.0
+            );
+            let _ = std::fs::remove_file(&wav);
+            return true;
+        }
+
         // Резкость отклика на голос: `--pulse-sim`. Гоним синтетический всплеск громкости
         // через ту же огибающую, что и живой индикатор, и печатаем высоту столбиками.
         if args.iter().any(|a| a == "--pulse-sim") {

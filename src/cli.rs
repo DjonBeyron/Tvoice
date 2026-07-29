@@ -7,6 +7,16 @@ use crate::{audio, mic, models, selftest, server, vad};
 /// Разобрать аргументы и выполнить диагностический режим.
 /// `true` — режим отработал, приложение запускать не нужно.
 pub fn dispatch(args: &[String]) -> bool {
+        // Качество распознавания: `--stt-bench <файл.wav> <эталонный текст>`.
+        if let Some(i) = args.iter().position(|a| a == "--stt-bench") {
+            let wav = args.get(i + 1).cloned().unwrap_or_default();
+            let reference = args.get(i + 2).cloned().unwrap_or_default();
+            let model = args.get(i + 3).cloned();
+            crate::bench::run(std::path::Path::new(&wav), &reference, model.as_deref());
+            crate::server::shutdown();
+            return true;
+        }
+
         if selftest::dispatch(args) {
             return true;
         }

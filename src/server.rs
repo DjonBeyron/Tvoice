@@ -130,7 +130,31 @@ fn free_port() -> Result<u16> {
     Ok(l.local_addr()?.port())
 }
 
+/// Аргументы декодирования боевого сервера. Собраны в одном месте, чтобы стенд
+/// качества мог сравнивать их с другими наборами, а не догадываться.
+pub fn decoding_args() -> Vec<String> {
+    ["-bs", "1", "-nf"].iter().map(|s| s.to_string()).collect()
+}
+
 fn start(model_file: &str, lang: &str) -> Result<Server> {
+    start_with(model_file, lang, &decoding_args())
+}
+
+/// Разовый сервер с заданными аргументами декодирования: распознать файл и погасить.
+/// Возвращает текст и время самого запроса (без запуска сервера).
+pub fn measure(
+    model_file: &str,
+    lang: &str,
+    extra: &[String],
+    wav: &Path,
+) -> Result<(String, f32)> {
+    let s = start_with(model_file, lang, extra)?;
+    let t0 = Instant::now();
+    let text = post_inference(s.port, wav)?;
+    Ok((text, t0.elapsed().as_secs_f32()))
+}
+
+fn start_with(model_file: &str, lang: &str, extra: &[String]) -> Result<Server> {
     let exe = server_exe().ok_or_else(|| anyhow!("whisper-server.exe не найден"))?;
     let model = models::model_path(model_file);
     if !model.is_file() {
@@ -149,9 +173,7 @@ fn start(model_file: &str, lang: &str) -> Result<Server> {
         .arg(lang)
         .arg("-t")
         .arg(&threads)
-        .arg("-bs")
-        .arg("1")
-        .arg("-nf")
+        .args(extra)
         .arg("--host")
         .arg("127.0.0.1")
         .arg("--port")

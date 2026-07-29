@@ -10,6 +10,7 @@ mod log;
 
 mod app;
 mod audio;
+mod bench;
 mod caret;
 mod cli;
 mod config;
