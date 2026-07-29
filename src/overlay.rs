@@ -6,32 +6,128 @@
 //! Здесь только окно, позиционирование и превращение громкости микрофона в амплитуду;
 //! сам рисунок кадра — в `hud.rs`.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM};
+use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Graphics::Gdi::{
+    GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetCursorPos,
-    PeekMessageW, RegisterClassW, ShowWindow, HMENU, MSG, PM_REMOVE, SW_HIDE, SW_SHOWNOACTIVATE,
-    WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-    WS_EX_TRANSPARENT, WS_POPUP,
+    GetSystemMetrics, PeekMessageW, RegisterClassW, ShowWindow, HMENU, MSG,
+    PM_REMOVE, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+    SW_HIDE, SW_SHOWNOACTIVATE, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
-use crate::hud::{Canvas, H};
+use crate::hud::{self, Canvas};
 
 /// Насколько громче уровня тишины должен быть пик, чтобы точка вытянулась на всю высоту.
 const VOICE_RANGE: f32 = 0.22;
 
-/// Привязывать индикатор к курсору ввода вместо указателя мыши.
-/// По умолчанию выключено: в приложениях на Chromium точной каретки нет, и индикатор
-/// встаёт к рамке поля ввода, что не всегда там, где ждёшь. Правится в config.json.
-static ANCHOR_CARET: AtomicBool = AtomicBool::new(false);
+/// Куда ставить индикатор во время диктовки.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Anchor {
+    /// За указателем мыши (по умолчанию).
+    Cursor,
+    /// К курсору ввода — точной каретке, а где её нет, к рамке поля ввода.
+    Caret,
+    TopLeft,
+    TopCenter,
+    TopRight,
+    LeftCenter,
+    RightCenter,
+    BottomLeft,
+    BottomCenter,
+    BottomRight,
+}
 
-pub fn set_anchor_caret(on: bool) {
-    ANCHOR_CARET.store(on, Ordering::Relaxed);
+impl Anchor {
+    pub const ALL: [Anchor; 10] = [
+        Anchor::Cursor,
+        Anchor::Caret,
+        Anchor::TopLeft,
+        Anchor::TopCenter,
+        Anchor::TopRight,
+        Anchor::LeftCenter,
+        Anchor::RightCenter,
+        Anchor::BottomLeft,
+        Anchor::BottomCenter,
+        Anchor::BottomRight,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Anchor::Cursor => "У указателя мыши",
+            Anchor::Caret => "У курсора ввода",
+            Anchor::TopLeft => "Сверху слева",
+            Anchor::TopCenter => "Сверху по центру",
+            Anchor::TopRight => "Сверху справа",
+            Anchor::LeftCenter => "Слева по центру",
+            Anchor::RightCenter => "Справа по центру",
+            Anchor::BottomLeft => "Снизу слева",
+            Anchor::BottomCenter => "Снизу по центру",
+            Anchor::BottomRight => "Снизу справа",
+        }
+    }
+
+    /// Имя для config.json — читаемое, чтобы файл можно было править руками.
+    pub fn id(self) -> &'static str {
+        match self {
+            Anchor::Cursor => "cursor",
+            Anchor::Caret => "caret",
+            Anchor::TopLeft => "top-left",
+            Anchor::TopCenter => "top-center",
+            Anchor::TopRight => "top-right",
+            Anchor::LeftCenter => "left-center",
+            Anchor::RightCenter => "right-center",
+            Anchor::BottomLeft => "bottom-left",
+            Anchor::BottomCenter => "bottom-center",
+            Anchor::BottomRight => "bottom-right",
+        }
+    }
+
+    pub fn from_id(s: &str) -> Anchor {
+        Anchor::ALL
+            .into_iter()
+            .find(|a| a.id() == s)
+            .unwrap_or(Anchor::Cursor)
+    }
+
+    fn index(self) -> u8 {
+        Anchor::ALL.iter().position(|a| *a == self).unwrap_or(0) as u8
+    }
+
+    fn from_index(i: u8) -> Anchor {
+        *Anchor::ALL.get(i as usize).unwrap_or(&Anchor::Cursor)
+    }
+}
+
+/// Отступ индикатора от края экрана.
+const EDGE: i32 = 24;
+
+static ANCHOR: AtomicU8 = AtomicU8::new(0);
+/// Масштаб индикатора в процентах (100 = базовый размер).
+static SCALE_PCT: AtomicU32 = AtomicU32::new(100);
+
+pub fn set_scale(scale: f32) {
+    SCALE_PCT.store((scale * 100.0).round().max(1.0) as u32, Ordering::Relaxed);
+}
+
+pub fn current_scale() -> f32 {
+    SCALE_PCT.load(Ordering::Relaxed) as f32 / 100.0
+}
+
+pub fn set_anchor(a: Anchor) {
+    ANCHOR.store(a.index(), Ordering::Relaxed);
+}
+
+pub fn current_anchor() -> Anchor {
+    Anchor::from_index(ANCHOR.load(Ordering::Relaxed))
 }
 
 struct State {
@@ -102,6 +198,7 @@ unsafe fn run(state: Arc<State>, stop: Arc<AtomicBool>) {
 
     let ex_style =
         WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+    let (w0, h0) = hud::size_for(current_scale());
     let Ok(hwnd) = CreateWindowExW(
         ex_style,
         class_name,
@@ -109,8 +206,8 @@ unsafe fn run(state: Arc<State>, stop: Arc<AtomicBool>) {
         WS_POPUP,
         0,
         0,
-        crate::hud::W,
-        H,
+        w0,
+        h0,
         HWND::default(),
         HMENU::default(),
         HINSTANCE(hinst.0),
@@ -119,9 +216,12 @@ unsafe fn run(state: Arc<State>, stop: Arc<AtomicBool>) {
         return;
     };
 
-    let Some(canvas) = Canvas::new() else {
-        crate::logln!("overlay: не удалось создать буфер рисования");
-        return;
+    let mut canvas = match Canvas::new(current_scale()) {
+        Some(c) => c,
+        None => {
+            crate::logln!("overlay: не удалось создать буфер рисования");
+            return;
+        }
     };
 
     let t0 = Instant::now();
@@ -136,10 +236,19 @@ unsafe fn run(state: Arc<State>, stop: Arc<AtomicBool>) {
             DispatchMessageW(&msg);
         }
 
+        // Размер поменяли в настройках — пересобираем буфер под новый масштаб.
+        let scale = current_scale();
+        if (scale - canvas.scale).abs() > 0.001 {
+            if let Some(c) = Canvas::new(scale) {
+                canvas = c;
+                crate::logln!("overlay: масштаб {:.0}%", scale * 100.0);
+            }
+        }
+
         if state.visible.load(Ordering::Relaxed) {
             // Поиск курсора ввода идёт в своём потоке и только пока индикатор виден:
             // вызовы UI Automation лезут в чужой процесс и стоят десятки миллисекунд.
-            if ANCHOR_CARET.load(Ordering::Relaxed) {
+            if current_anchor() == Anchor::Caret {
                 crate::caret::watch();
                 crate::caret::set_active(true);
             }
@@ -156,7 +265,7 @@ unsafe fn run(state: Arc<State>, stop: Arc<AtomicBool>) {
                 smooth * 0.6 + voice * 0.4
             };
 
-            let (pos, source) = anchor();
+            let (pos, source) = anchor(canvas.w, canvas.h);
             if source != last_source {
                 crate::logln!("overlay: привязка — {source}, позиция {pos:?}");
                 last_source = source;
@@ -222,15 +331,71 @@ pub fn simulate_pulse(levels: &[f32]) -> Vec<f32> {
 
 /// Куда поставить индикатор: к курсору ввода (мигающей палочке), а если его нет —
 /// к указателю мыши. `true` во втором элементе — позиция взята от курсора ввода.
-unsafe fn anchor() -> ((i32, i32), &'static str) {
-    if ANCHOR_CARET.load(Ordering::Relaxed) {
-        if let Some((p, source)) = crate::caret::position() {
-            // Чуть ниже и правее строки ввода, чтобы не перекрывать сам текст.
-            return ((p.0 + 6, p.1 + 4), source);
-        }
-    }
+unsafe fn anchor(w: i32, h: i32) -> ((i32, i32), &'static str) {
+    let mode = current_anchor();
     let mut pt = POINT::default();
     let _ = GetCursorPos(&mut pt);
-    ((pt.x + 14, pt.y - H - 2), "мышь")
+
+    let (pos, source) = match mode {
+        Anchor::Caret => match crate::caret::position() {
+            // Чуть ниже и правее строки ввода, чтобы не перекрывать сам текст.
+            Some((p, source)) => ((p.0 + 6, p.1 + 4), source),
+            None => ((pt.x + 14, pt.y - h - 2), "мышь"),
+        },
+        Anchor::Cursor => ((pt.x + 14, pt.y - h - 2), "мышь"),
+        _ => {
+            // Экран выбираем по указателю мыши: пользователь смотрит туда, где мышь,
+            // а активное окно может быть на другом мониторе (или его нет вовсе).
+            // Рабочая область, а не весь экран, — иначе нижние места уедут под панель задач.
+            let r = work_area_at(pt);
+            let (cx, cy) = ((r.left + r.right) / 2 - w / 2, (r.top + r.bottom) / 2 - h / 2);
+            let (left, right) = (r.left + EDGE, r.right - w - EDGE);
+            let (top, bottom) = (r.top + EDGE, r.bottom - h - EDGE);
+            let p = match mode {
+                Anchor::TopLeft => (left, top),
+                Anchor::TopCenter => (cx, top),
+                Anchor::TopRight => (right, top),
+                Anchor::LeftCenter => (left, cy),
+                Anchor::RightCenter => (right, cy),
+                Anchor::BottomLeft => (left, bottom),
+                Anchor::BottomCenter => (cx, bottom),
+                Anchor::BottomRight => (right, bottom),
+                _ => (cx, cy),
+            };
+            (p, "экран")
+        }
+    };
+
+    // Держим индикатор целиком на том мониторе, куда он попал: у края экрана он иначе
+    // разрезается пополам между двумя мониторами.
+    let area = work_area_at(POINT {
+        x: pos.0 + w / 2,
+        y: pos.1 + h / 2,
+    });
+    let clamped = (
+        pos.0.clamp(area.left, (area.right - w).max(area.left)),
+        pos.1.clamp(area.top, (area.bottom - h).max(area.top)),
+    );
+    (clamped, source)
+}
+
+/// Рабочая область монитора, на котором лежит точка (ближайшего, если точка вне всех).
+unsafe fn work_area_at(pt: POINT) -> RECT {
+    let monitor = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+    let mut info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    if GetMonitorInfoW(monitor, &mut info).as_bool() {
+        info.rcWork
+    } else {
+        // Запасной вариант — весь виртуальный экран.
+        RECT {
+            left: GetSystemMetrics(SM_XVIRTUALSCREEN),
+            top: GetSystemMetrics(SM_YVIRTUALSCREEN),
+            right: GetSystemMetrics(SM_XVIRTUALSCREEN) + GetSystemMetrics(SM_CXVIRTUALSCREEN),
+            bottom: GetSystemMetrics(SM_YVIRTUALSCREEN) + GetSystemMetrics(SM_CYVIRTUALSCREEN),
+        }
+    }
 }
 

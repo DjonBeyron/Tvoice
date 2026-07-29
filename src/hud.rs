@@ -10,14 +10,21 @@ use windows::Win32::Graphics::Gdi::{
     AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION,
     DIB_RGB_COLORS, HBITMAP, HDC, HGDIOBJ,
 };
-use windows::Win32::UI::WindowsAndMessaging::{
-    GetSystemMetrics, UpdateLayeredWindow, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
-    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, ULW_ALPHA,
-};
+use windows::Win32::UI::WindowsAndMessaging::{UpdateLayeredWindow, ULW_ALPHA};
 
 /// Размер окна индикатора (с запасом под свечение).
-pub const W: i32 = 44;
-pub const H: i32 = 32;
+/// Базовый размер индикатора при масштабе 100%.
+pub const BASE_W: f32 = 44.0;
+pub const BASE_H: f32 = 32.0;
+/// Пределы масштаба: мельче не разглядеть, крупнее начинает мешать.
+pub const SCALE_MIN: f32 = 0.6;
+pub const SCALE_MAX: f32 = 2.2;
+
+/// Размер окна индикатора для заданного масштаба.
+pub fn size_for(scale: f32) -> (i32, i32) {
+    let s = scale.clamp(SCALE_MIN, SCALE_MAX);
+    ((BASE_W * s).round() as i32, (BASE_H * s).round() as i32)
+}
 /// Пилюля-подложка внутри окна.
 const PAD: f32 = 5.0;
 /// Точки: ширина постоянна, растут только вверх-вниз — из круга в капсулу.
@@ -32,18 +39,22 @@ pub struct Canvas {
     bmp: HBITMAP,
     old: HGDIOBJ,
     bits: *mut u32,
+    pub w: i32,
+    pub h: i32,
+    pub scale: f32,
 }
 
 impl Canvas {
-    pub unsafe fn new() -> Option<Self> {
+    pub unsafe fn new(scale: f32) -> Option<Self> {
+        let (w, h) = size_for(scale);
         let screen = GetDC(HWND::default());
         let dc = CreateCompatibleDC(screen);
         ReleaseDC(HWND::default(), screen);
         let mut info = BITMAPINFO {
             bmiHeader: BITMAPINFOHEADER {
                 biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth: W,
-                biHeight: -H, // сверху вниз
+                biWidth: w,
+                biHeight: -h, // сверху вниз
                 biPlanes: 1,
                 biBitCount: 32,
                 biCompression: BI_RGB.0,
@@ -62,24 +73,28 @@ impl Canvas {
             bmp,
             old,
             bits: bits as *mut u32,
+            w,
+            h,
+            scale,
         })
     }
 
     fn pixels(&self) -> &mut [u32] {
-        unsafe { std::slice::from_raw_parts_mut(self.bits, (W * H) as usize) }
+        unsafe { std::slice::from_raw_parts_mut(self.bits, (self.w * self.h) as usize) }
     }
 
     /// Отрисовать кадр: подложка-пилюля и три точки, дышащие под уровень звука.
     pub fn draw(&self, t: f32, level: f32) {
-        draw_frame(self.pixels(), t, level);
+        let (w, h, s) = (self.w, self.h, self.scale);
+        draw_frame(self.pixels(), w, h, s, t, level);
     }
 
     /// Отдать буфер окну с попиксельной прозрачностью.
     pub unsafe fn present(&self, hwnd: HWND, pos: (i32, i32)) {
-        let (x, y) = clamp_to_screen(pos);
+        let (x, y) = pos;
         let dst = POINT { x, y };
         let src = POINT { x: 0, y: 0 };
-        let size = SIZE { cx: W, cy: H };
+        let size = SIZE { cx: self.w, cy: self.h };
         let blend = BLENDFUNCTION {
             BlendOp: AC_SRC_OVER as u8,
             BlendFlags: 0,
@@ -115,14 +130,16 @@ impl Drop for Canvas {
 /// Кадр индикатора: подложка-пилюля и три точки, вытягивающиеся под голос.
 /// `voice` — уже приведённая к 0…1 громкость (см. `voice_amount`).
 /// Вынесено из `Canvas`, чтобы тот же рисунок можно было отрисовать в файл для проверки.
-pub fn draw_frame(px: &mut [u32], t: f32, voice: f32) {
+pub fn draw_frame(px: &mut [u32], w: i32, h: i32, scale: f32, t: f32, voice: f32) {
     px.fill(0);
-    let cx = W as f32 / 2.0;
-    let cy = H as f32 / 2.0;
+    let s = scale.clamp(SCALE_MIN, SCALE_MAX);
+    let (pad, gap, dot_r, dot_grow) = (PAD * s, DOT_GAP * s, DOT_R * s, DOT_GROW * s);
+    let cx = w as f32 / 2.0;
+    let cy = h as f32 / 2.0;
     // Подложка: тёмная полупрозрачная пилюля со скруглением по высоте.
-    let half = (W as f32 / 2.0 - PAD, H as f32 / 2.0 - PAD);
-    rounded_rect(px, cx, cy, half, half.1, (14, 16, 15), 0.62);
-    rounded_rect(px, cx, cy, (half.0 - 0.6, half.1 - 0.6), half.1, (255, 255, 255), 0.05);
+    let half = (w as f32 / 2.0 - pad, h as f32 / 2.0 - pad);
+    rounded_rect(px, w, h, cx, cy, half, half.1, (14, 16, 15), 0.62);
+    rounded_rect(px, w, h, cx, cy, (half.0 - 0.6, half.1 - 0.6), half.1, (255, 255, 255), 0.05);
 
     let voice = voice.clamp(0.0, 1.0);
     // Точки прыгают вместе с голосом — каждая со своей долей, чтобы не выглядеть одним
@@ -135,24 +152,28 @@ pub fn draw_frame(px: &mut [u32], t: f32, voice: f32) {
         let idle = 0.025 * (0.5 + 0.5 * (t * 1.6 - i as f32 * 0.8).sin());
         let amp = (idle + voice * SHARE[i] * (1.0 + chaos)).clamp(0.0, 1.0);
         // Ширина постоянна, тянется только высота: круг превращается в капсулу.
-        let half_h = DOT_R + DOT_GROW * amp;
-        let x = cx + (i as f32 - (DOTS as f32 - 1.0) / 2.0) * DOT_GAP;
+        let half_h = dot_r + dot_grow * amp;
+        let x = cx + (i as f32 - (DOTS as f32 - 1.0) / 2.0) * gap;
         // Ореол повторяет форму — тоже вытягивается вверх-вниз.
         rounded_rect(
             px,
+            w,
+            h,
             x,
             cy,
-            (DOT_R * 1.9, half_h * 1.25),
-            DOT_R * 1.9,
+            (dot_r * 1.9, half_h * 1.25),
+            dot_r * 1.9,
             (157, 122, 255),
             0.13 * amp,
         );
         rounded_rect(
             px,
+            w,
+            h,
             x,
             cy,
-            (DOT_R, half_h),
-            DOT_R,
+            (dot_r, half_h),
+            dot_r,
             (207, 189, 255),
             0.78 + 0.22 * voice,
         );
@@ -160,8 +181,81 @@ pub fn draw_frame(px: &mut [u32], t: f32, voice: f32) {
 }
 
 /// Размер кадра индикатора.
-pub fn size() -> (i32, i32) {
-    (W, H)
+
+
+/// Значок приложения и трея — тот же язык форм, что у индикатора: тёмная подложка
+/// со скруглением и три точки-полоски. Квадрат, потому что значки квадратные.
+///
+/// Возвращает пиксели как BGRA с предумноженной альфой — в таком виде их ждёт
+/// `CreateIcon`; для интерфейса есть `icon_rgba`.
+pub fn icon_pixels(size: i32) -> Vec<u32> {
+    let mut px = vec![0u32; (size * size) as usize];
+    let s = size as f32;
+    let (cx, cy) = (s / 2.0, s / 2.0);
+    let half = (s * 0.44, s * 0.44);
+    let round = s * 0.24;
+    rounded_rect(&mut px, size, size, cx, cy, half, round, (18, 20, 19), 0.95);
+    rounded_rect(
+        &mut px,
+        size,
+        size,
+        cx,
+        cy,
+        (half.0 - s * 0.02, half.1 - s * 0.02),
+        round,
+        (255, 255, 255),
+        0.06,
+    );
+    // Разная высота полосок читается как «голос» даже в 16 точек.
+    let heights = [0.11f32, 0.19, 0.14];
+    let r = s * 0.072;
+    for (i, hh) in heights.iter().enumerate() {
+        let x = cx + (i as f32 - 1.0) * s * 0.21;
+        rounded_rect(
+            &mut px,
+            size,
+            size,
+            x,
+            cy,
+            (r, s * hh),
+            r,
+            (207, 189, 255),
+            0.97,
+        );
+    }
+    px
+}
+
+/// Тот же значок обычной RGBA-картинкой (альфа не предумножена) — для окна приложения.
+pub fn icon_rgba(size: i32) -> Vec<u8> {
+    let px = icon_pixels(size);
+    let mut out = Vec::with_capacity(px.len() * 4);
+    for p in &px {
+        let a = ((p >> 24) & 0xFF) as u32;
+        let un = |c: u32| if a == 0 { 0 } else { (c * 255 / a).min(255) as u8 };
+        out.push(un((p >> 16) & 0xFF));
+        out.push(un((p >> 8) & 0xFF));
+        out.push(un(p & 0xFF));
+        out.push(a as u8);
+    }
+    out
+}
+
+/// Кадр индикатора в виде картинки для интерфейса: тот же рисунок, что видит
+/// пользователь на экране, поэтому предпросмотр не может разойтись с настоящим видом.
+pub fn preview(scale: f32, t: f32, voice: f32) -> ([usize; 2], Vec<u8>) {
+    let (w, h) = size_for(scale);
+    let mut px = vec![0u32; (w * h) as usize];
+    draw_frame(&mut px, w, h, scale, t, voice);
+    // Буфер лежит как BGRA с предумноженной альфой — переставляем в RGBA.
+    let mut rgba = Vec::with_capacity(px.len() * 4);
+    for p in &px {
+        rgba.push(((p >> 16) & 0xFF) as u8);
+        rgba.push(((p >> 8) & 0xFF) as u8);
+        rgba.push((p & 0xFF) as u8);
+        rgba.push(((p >> 24) & 0xFF) as u8);
+    }
+    ([w as usize, h as usize], rgba)
 }
 
 /// Плавный шум: в целых точках — псевдослучайные значения, между ними мягкая
@@ -184,6 +278,8 @@ fn hash(n: f32) -> f32 {
 /// При `half.0 == half.1 == radius` это круг — на нём и построены точки индикатора.
 fn rounded_rect(
     px: &mut [u32],
+    w: i32,
+    h: i32,
     cx: f32,
     cy: f32,
     half: (f32, f32),
@@ -192,14 +288,14 @@ fn rounded_rect(
     alpha: f32,
 ) {
     let radius = radius.min(half.0).min(half.1);
-    for y in 0..H {
-        for x in 0..W {
+    for y in 0..h {
+        for x in 0..w {
             let dx = (x as f32 + 0.5 - cx).abs() - (half.0 - radius);
             let dy = (y as f32 + 0.5 - cy).abs() - (half.1 - radius);
             let d = (dx.max(0.0).powi(2) + dy.max(0.0).powi(2)).sqrt() - radius;
             let cover = (0.5 - d).clamp(0.0, 1.0);
             if cover > 0.0 {
-                blend(px, (y * W + x) as usize, rgb, alpha * cover);
+                blend(px, (y * w + x) as usize, rgb, alpha * cover);
             }
         }
     }
@@ -224,20 +320,4 @@ fn blend(px: &mut [u32], i: usize, rgb: (u8, u8, u8), a: f32) {
     let r = rgb.0 as f32 * a + dr * inv;
     let out_a = a * 255.0 + da * inv;
     px[i] = ((out_a as u32) << 24) | ((r as u32) << 16) | ((g as u32) << 8) | b as u32;
-}
-
-/// Не дать индикатору уехать за край рабочего стола.
-///
-/// Границы берём по всему виртуальному экрану, а не по основному монитору: иначе на
-/// системе с несколькими мониторами индикатор утаскивало бы на главный, за километр
-/// от места, где человек печатает.
-unsafe fn clamp_to_screen((x, y): (i32, i32)) -> (i32, i32) {
-    let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
-    let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
-    let vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-    let vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-    (
-        x.clamp(vx, (vx + vw - W).max(vx)),
-        y.clamp(vy, (vy + vh - H).max(vy)),
-    )
 }

@@ -283,33 +283,17 @@ unsafe fn show_menu(hwnd: HWND) {
     let _ = DestroyMenu(menu);
 }
 
-/// Значок рисуем сами: 16×16 ARGB-кружок в цвет индикатора — чтобы не тащить .ico в репозиторий.
+/// Значок трея — тот же рисунок, что у индикатора диктовки (см. `hud::icon_pixels`),
+/// чтобы приложение узнавалось по одной и той же форме и в трее, и на экране.
 unsafe fn make_icon() -> windows::Win32::UI::WindowsAndMessaging::HICON {
-    const S: i32 = 16;
-    let mut argb = vec![0u8; (S * S * 4) as usize];
-    for y in 0..S {
-        for x in 0..S {
-            let (dx, dy) = (x as f32 - 7.5, y as f32 - 7.5);
-            let i = ((y * S + x) * 4) as usize;
-            if dx * dx + dy * dy <= 49.0 {
-                argb[i] = 0x7A; // B
-                argb[i + 1] = 0xD6; // G
-                argb[i + 2] = 0x37; // R
-                argb[i + 3] = 0xFF; // A
-            }
-        }
+    const S: i32 = 32;
+    let px = crate::hud::icon_pixels(S);
+    let mut bgra = Vec::with_capacity(px.len() * 4);
+    for p in &px {
+        bgra.extend_from_slice(&p.to_le_bytes());
     }
     let and_mask = vec![0u8; (S * S / 8) as usize];
     let hinst: windows::Win32::Foundation::HINSTANCE =
         GetModuleHandleW(None).map(Into::into).unwrap_or_default();
-    CreateIcon(
-        hinst,
-        S,
-        S,
-        1,
-        32,
-        and_mask.as_ptr(),
-        argb.as_ptr(),
-    )
-    .unwrap_or_default()
+    CreateIcon(hinst, S, S, 1, 32, and_mask.as_ptr(), bgra.as_ptr()).unwrap_or_default()
 }

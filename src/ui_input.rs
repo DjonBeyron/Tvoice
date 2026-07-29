@@ -4,6 +4,7 @@ use egui::RichText;
 
 use crate::app::TvoiceApp;
 use crate::inject;
+use crate::overlay;
 use crate::theme as t;
 use crate::ui_kit as k;
 
@@ -14,6 +15,8 @@ impl TvoiceApp {
         self.mode_card(ui);
         ui.add_space(t::MD);
         self.paste_card(ui);
+        ui.add_space(t::MD);
+        self.hud_card(ui);
         ui.add_space(t::XL);
     }
 
@@ -142,6 +145,100 @@ impl TvoiceApp {
                 );
             }
         });
+    }
+}
+
+impl TvoiceApp {
+    /// Индикатор диктовки: где показывать, какого размера, и как он выглядит.
+    fn hud_card(&mut self, ui: &mut egui::Ui) {
+        k::card(ui, |ui| {
+            k::heading(ui, "Индикатор диктовки");
+            k::hint(
+                ui,
+                "Небольшой значок, который виден во время записи поверх всех окон.",
+            );
+            ui.add_space(t::SM);
+
+            k::row(
+                ui,
+                |ui| {
+                    ui.label(RichText::new("Место на экране").size(t::T_BODY));
+                    k::hint(ui, "Углы и середины сторон — на том мониторе, где вы работаете.");
+                },
+                |ui| {
+                    let w = ui.available_width();
+                    egui::ComboBox::from_id_source("hud_anchor")
+                        .selected_text(RichText::new(self.hud_anchor.label()).size(t::T_BODY))
+                        .width(w)
+                        .show_ui(ui, |ui| {
+                            for a in overlay::Anchor::ALL {
+                                if ui
+                                    .selectable_value(&mut self.hud_anchor, a, a.label())
+                                    .clicked()
+                                {
+                                    overlay::set_anchor(a);
+                                    self.dirty = true;
+                                }
+                            }
+                        });
+                },
+            );
+
+            k::divider(ui);
+            k::row(
+                ui,
+                |ui| {
+                    ui.label(RichText::new("Размер").size(t::T_BODY));
+                    k::hint(ui, "От 60% до 220% базового.");
+                },
+                |ui| {
+                    let slider = egui::Slider::new(
+                        &mut self.hud_scale,
+                        crate::hud::SCALE_MIN..=crate::hud::SCALE_MAX,
+                    )
+                    .show_value(false);
+                    if ui.add_sized([ui.available_width(), 20.0], slider).changed() {
+                        overlay::set_scale(self.hud_scale);
+                        self.dirty = true;
+                    }
+                },
+            );
+
+            ui.add_space(t::SM);
+            self.hud_preview(ui);
+        });
+    }
+
+    /// Живой предпросмотр: рисуется тем же кодом, что и настоящий индикатор,
+    /// поэтому разойтись с ним не может. Точки дышат под тот же уровень микрофона.
+    fn hud_preview(&mut self, ui: &mut egui::Ui) {
+        let time = ui.input(|i| i.time) as f32;
+        let ([w, h], rgba) = crate::hud::preview(self.hud_scale, time, self.voice);
+        let image = egui::ColorImage::from_rgba_premultiplied([w, h], &rgba);
+        let texture = self
+            .hud_texture
+            .get_or_insert_with(|| ui.ctx().load_texture("hud", image.clone(), Default::default()));
+        texture.set(image, Default::default());
+
+        // Клетчатая подложка: видно, что фон индикатора полупрозрачный.
+        egui::Frame::none()
+            .fill(t::SURFACE_LOW)
+            .rounding(egui::Rounding::same(t::R_SM))
+            .inner_margin(egui::Margin::symmetric(t::MD, t::SM))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.vertical_centered(|ui| {
+                    ui.add(egui::Image::from_texture(&*texture).fit_to_original_size(1.0));
+                    ui.add_space(t::BASE);
+                    ui.label(
+                        RichText::new(format!("{w}×{h} точек · {:.0}%", self.hud_scale * 100.0))
+                            .size(t::T_LABEL_SM)
+                            .color(t::MUTED),
+                    );
+                });
+            });
+        // Предпросмотр живой — просим следующий кадр.
+        ui.ctx().request_repaint();
     }
 }
 

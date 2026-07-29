@@ -234,6 +234,14 @@ pub fn content_column(ui: &mut egui::Ui, width: f32, add: impl FnOnce(&mut egui:
         egui::Layout::top_down(egui::Align::Min),
         |ui| {
             ui.set_max_width(width);
+            // Жёсткая отсечка по колонке: даже если какой-то виджет посчитает себя шире
+            // положенного, он не нарисуется поверх соседней панели и за краем окна.
+            let clip = ui.clip_rect();
+            let left = ui.max_rect().left();
+            ui.set_clip_rect(egui::Rect::from_min_max(
+                egui::pos2(left, clip.top()),
+                egui::pos2((left + width).min(clip.right()), clip.bottom()),
+            ));
             add(ui);
         },
     );

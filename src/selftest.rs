@@ -48,10 +48,39 @@ pub fn dispatch(args: &[String]) -> bool {
             return true;
         }
 
+        // Картинка значка в файл: `--icon-preview <файл.bmp>` — посмотреть, как он
+        // выглядит в трее и на панели задач, не запуская приложение.
+        if let Some(i) = args.iter().position(|a| a == "--icon-preview") {
+            let out = args.get(i + 1).cloned().unwrap_or_else(|| "icon.bmp".into());
+            let size = 64usize;
+            let px = hud::icon_pixels(size as i32);
+            // Показываем на двух подложках, чтобы оценить края и прозрачность.
+            let (tw, th) = (size * 2, size);
+            let mut rgb = vec![0u32; tw * th];
+            for (col, bg) in [(0usize, 0x1E2020u32), (1, 0xF2F2F0)] {
+                for y in 0..size {
+                    for x in 0..size {
+                        let s = px[y * size + x];
+                        let a = ((s >> 24) & 0xFF) as u32;
+                        let mix = |sc: u32, bc: u32| (sc + bc * (255 - a) / 255).min(255);
+                        rgb[y * tw + col * size + x] = (mix((s >> 16) & 0xFF, (bg >> 16) & 0xFF) << 16)
+                            | (mix((s >> 8) & 0xFF, (bg >> 8) & 0xFF) << 8)
+                            | mix(s & 0xFF, bg & 0xFF);
+                    }
+                }
+            }
+            write_bmp(&out, tw, th, &rgb);
+            return true;
+        }
+
         // Показать индикатор без диктовки: `--overlay-demo [сек]`. Нужно, чтобы убедиться,
         // что окно вообще появляется на экране, и снять его скриншотом.
         if let Some(i) = args.iter().position(|a| a == "--overlay-demo") {
             let secs: u64 = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(6);
+            // Демонстрация должна показывать то же, что и настоящая диктовка.
+            let cfg = crate::config::load();
+            overlay::set_anchor(overlay::Anchor::from_id(&cfg.hud_anchor));
+            overlay::set_scale(cfg.hud_scale);
             let ov = overlay::Overlay::spawn();
             ov.set_visible(true);
             let t0 = std::time::Instant::now();
@@ -213,7 +242,7 @@ pub fn dispatch(args: &[String]) -> bool {
 /// Отрисовать кадры индикатора в BMP: три уровня громкости на двух подложках.
 /// Нужно, чтобы оценивать вид индикатора глазами, а не запуская диктовку.
 fn overlay_preview(path: &str) {
-    let (w, h) = hud::size();
+    let (w, h) = hud::size_for(1.0);
     let (cols, rows) = (4usize, 2usize);
     let (tw, th) = (w as usize * cols, h as usize * rows);
     let mut out = vec![0u32; tw * th]; // 0x00RRGGBB
@@ -228,7 +257,7 @@ fn overlay_preview(path: &str) {
             (2, 1.0, 3.1),
             (3, 1.0, 5.4),
         ] {
-            hud::draw_frame(&mut frame, t, level);
+            hud::draw_frame(&mut frame, w, h, 1.0, t, level);
             for y in 0..h as usize {
                 for x in 0..w as usize {
                     let s = frame[y * w as usize + x];
@@ -244,7 +273,11 @@ fn overlay_preview(path: &str) {
         }
     }
 
-    // 24-битный BMP, строки снизу вверх, выравнивание строки на 4 байта.
+    write_bmp(path, tw, th, &out);
+}
+
+/// Записать картинку 24-битным BMP: строки снизу вверх, выравнивание строки на 4 байта.
+fn write_bmp(path: &str, tw: usize, th: usize, out: &[u32]) {
     let stride = (tw * 3 + 3) & !3;
     let data_size = stride * th;
     let mut bytes = Vec::with_capacity(54 + data_size);

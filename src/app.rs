@@ -89,8 +89,12 @@ pub struct TvoiceApp {
     pub(crate) first_frame: bool,
     /// Прятать окно в трей при запуске.
     pub(crate) start_in_tray: bool,
-    /// Ставить индикатор к курсору ввода, а не к мыши (только из config.json).
-    pub(crate) anchor_to_caret: bool,
+    /// Где показывать индикатор диктовки.
+    pub(crate) hud_anchor: crate::overlay::Anchor,
+    /// Размер индикатора: 1.0 — базовый.
+    pub(crate) hud_scale: f32,
+    /// Картинка предпросмотра индикатора в настройках.
+    pub(crate) hud_texture: Option<egui::TextureHandle>,
     /// Настройки изменились — сохранить в конце кадра.
     pub(crate) dirty: bool,
     /// Был ли хоткей в режиме захвата в прошлом кадре (для сохранения по завершении).
@@ -173,14 +177,17 @@ impl TvoiceApp {
             window_pos: egui::pos2(200.0, 120.0),
             first_frame: true,
             start_in_tray: cfg.start_in_tray,
-            anchor_to_caret: cfg.anchor_to_caret,
+            hud_anchor: crate::overlay::Anchor::from_id(&cfg.hud_anchor),
+            hud_scale: cfg.hud_scale,
+            hud_texture: None,
             dirty: false,
             was_capturing: false,
             was_downloading_engine: false,
         };
         crate::inject::set_mode(app.paste_mode);
         crate::inject::set_char_delay_us(app.char_delay_us);
-        crate::overlay::set_anchor_caret(cfg.anchor_to_caret);
+        crate::overlay::set_anchor(crate::overlay::Anchor::from_id(&cfg.hud_anchor));
+        crate::overlay::set_scale(cfg.hud_scale);
         // Индикатор читает громкость сам, минуя цикл интерфейса: в трее тот идёт
         // 10 кадров в секунду, и пульсация от него получалась вялой.
         app.overlay.attach_level(app.engine.level_handle());
@@ -229,7 +236,8 @@ impl TvoiceApp {
             paste_mode: self.paste_mode,
             char_delay_us: self.char_delay_us,
             start_in_tray: self.start_in_tray,
-            anchor_to_caret: self.anchor_to_caret,
+            hud_anchor: self.hud_anchor.id().to_string(),
+            hud_scale: self.hud_scale,
         };
         crate::config::save(&cfg);
     }

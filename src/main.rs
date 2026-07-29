@@ -64,7 +64,13 @@ fn main() -> eframe::Result<()> {
             } else {
                 egui::pos2(200.0, 120.0)
             })
-            .with_app_id("dev.pith.tvoice"),
+            .with_app_id("dev.pith.tvoice")
+            // Значок окна — тот же рисунок, что в трее и у индикатора.
+            .with_icon(egui::IconData {
+                rgba: hud::icon_rgba(64),
+                width: 64,
+                height: 64,
+            }),
         ..Default::default()
     };
 
