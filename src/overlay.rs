@@ -187,7 +187,7 @@ unsafe fn run(state: Arc<State>, stop: Arc<AtomicBool>) {
 /// несколько раз, поэтому любой множитель либо «зажигает» точки в тишине, либо
 /// упирается в потолок на первом же слове. Поэтому держим плавающую оценку тишины
 /// (вниз быстро, вверх еле-еле) и растягиваем в 0…1 то, что над ней.
-fn voice_amount(level: f32, floor: &mut f32) -> f32 {
+pub fn voice_amount(level: f32, floor: &mut f32) -> f32 {
     *floor = if level < *floor {
         *floor * 0.9 + level * 0.1
     } else {

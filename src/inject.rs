@@ -67,7 +67,7 @@ pub fn mode_name(mode: u8) -> &'static str {
     match mode {
         MODE_KEYS => "Клавиатура (для терминалов)",
         MODE_CLIPBOARD => "Буфер обмена (Ctrl+V)",
-        _ => "Авто (буфер, запас — клавиатура)",
+        _ => "Авто — буфер обмена",
     }
 }
 

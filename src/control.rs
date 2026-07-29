@@ -258,7 +258,13 @@ impl TvoiceApp {
                 gap.as_secs_f32()
             );
         }
-        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        if self.dictating && !self.hidden {
+            // Визуализатор должен идти плавно, а не десятью кадрами в секунду.
+            ctx.request_repaint();
+        } else {
+            // Свёрнуто в трей или простой — экран никто не видит, кадры не нужны.
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
     }
 
     pub(crate) fn hide_window(&mut self, ctx: &egui::Context) {

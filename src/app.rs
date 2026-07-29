@@ -1,31 +1,41 @@
-//! Каркас интерфейса TVOICE: вкладки, состояние, диспетчеризация, общие помощники.
-//! Отрисовка вкладок вынесена в ui_mic.rs / ui_models.rs / ui_dictation.rs.
+//! Каркас приложения: состояние и жизненный цикл кадра.
+//!
+//! Оформление и разметка живут отдельно: токены — в theme.rs, общие элементы — в
+//! ui_kit.rs, оболочка и экраны — в ui_shell.rs, ui_main.rs, ui_engine.rs,
+//! ui_input.rs, ui_system.rs.
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use egui::{Color32, RichText, Rounding, Sense, Stroke, Vec2};
 
 use crate::dictation::{self, SharedDictation};
 use crate::hotkey::Hotkey;
 use crate::mic::{DeviceInfo, MicCommand, MicEngine, PermissionReport};
 use crate::models::{self, SharedDownload};
 use crate::overlay::Overlay;
-use crate::theme;
 use crate::tray::Tray;
 
+/// Экран приложения.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Tab {
-    Mic,
-    Models,
-    Dictation,
+pub(crate) enum Route {
+    Main,
+    Settings,
+}
+
+/// Раздел настроек.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SettingsTab {
+    Engine,
+    Hotkeys,
+    Privacy,
 }
 
 pub struct TvoiceApp {
     pub(crate) ctx: egui::Context,
     pub(crate) engine: MicEngine,
-    pub(crate) tab: Tab,
+    pub(crate) route: Route,
+    pub(crate) settings_tab: SettingsTab,
 
     // --- вкладка «Микрофон» ---
     pub(crate) permission: Option<PermissionReport>,
@@ -39,6 +49,10 @@ pub struct TvoiceApp {
     pub(crate) last_record_path: Option<PathBuf>,
     pub(crate) log: Vec<String>,
     pub(crate) level: f32,
+    /// Громкость, приведённая к 0…1 тем же способом, что и в индикаторе у курсора.
+    pub(crate) voice: f32,
+    /// Плавающая оценка тишины для этого приведения.
+    pub(crate) voice_floor: f32,
 
     // --- вкладка «Модели» ---
     pub(crate) downloads: SharedDownload,
@@ -121,7 +135,8 @@ impl TvoiceApp {
             hotkey,
             ctx,
             engine,
-            tab: Tab::Mic,
+            route: Route::Main,
+            settings_tab: SettingsTab::Engine,
             permission: None,
             devices: Vec::new(),
             selected: None,
@@ -133,6 +148,8 @@ impl TvoiceApp {
             last_record_path: None,
             log: Vec::new(),
             level: 0.0,
+            voice: 0.0,
+            voice_floor: 0.01,
             downloads: models::new_shared(),
             selected_model,
             dictation: dictation::new_shared(),
@@ -282,32 +299,16 @@ impl eframe::App for TvoiceApp {
         } else {
             self.level * 0.85 + target * 0.15
         };
+        // Приведение к 0…1: постоянный множитель тут не работает, у пика фона и пика
+        // речи разница всего в несколько раз (см. overlay::voice_amount).
+        let voice = crate::overlay::voice_amount(target, &mut self.voice_floor);
+        self.voice = if voice > self.voice {
+            voice
+        } else {
+            self.voice * 0.6 + voice * 0.4
+        };
 
-        egui::TopBottomPanel::top("tabs").show(ctx, |ui| {
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new("TVOICE")
-                        .size(20.0)
-                        .strong()
-                        .color(Color32::from_rgb(0xF2, 0xF5, 0xF9)),
-                );
-                ui.add_space(10.0);
-                tab_button(ui, &mut self.tab, Tab::Mic, "Микрофон");
-                tab_button(ui, &mut self.tab, Tab::Models, "Модели");
-                tab_button(ui, &mut self.tab, Tab::Dictation, "Диктовка");
-            });
-            ui.add_space(6.0);
-        });
-
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.add_space(6.0);
-            match self.tab {
-                Tab::Mic => self.mic_tab(ui),
-                Tab::Models => self.models_tab(ui),
-                Tab::Dictation => self.dictation_tab(ui),
-            }
-        });
+        self.shell(ctx);
 
         // Индикатор у курсора во время диктовки (нативное окно в своём потоке).
         self.overlay.set_level(self.level);
@@ -337,61 +338,4 @@ impl Drop for TvoiceApp {
         // Гасим резидентный whisper-server (иначе процесс остался бы висеть).
         crate::server::shutdown();
     }
-}
-
-fn tab_button(ui: &mut egui::Ui, current: &mut Tab, tab: Tab, label: &str) {
-    let selected = *current == tab;
-    let text = if selected {
-        RichText::new(label).strong().color(theme::ACCENT)
-    } else {
-        RichText::new(label).color(theme::MUTED)
-    };
-    if ui.selectable_label(selected, text).clicked() {
-        *current = tab;
-    }
-}
-
-// --- общие UI-помощники (используются вкладками) ---
-
-/// «Карточка» с фоном и обводкой.
-pub(crate) fn card<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    egui::Frame::none()
-        .fill(theme::PANEL)
-        .stroke(Stroke::new(1.0_f32, theme::LINE))
-        .rounding(Rounding::same(12.0))
-        .inner_margin(egui::Margin::same(14.0))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            add(ui)
-        })
-        .inner
-}
-
-pub(crate) fn status_dot(ui: &mut egui::Ui, color: Color32) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::hover());
-    ui.painter()
-        .circle_filled(rect.center(), 6.5, color.linear_multiply(0.25));
-    ui.painter().circle_filled(rect.center(), 4.5, color);
-}
-
-/// Горизонтальный индикатор уровня.
-pub(crate) fn meter_bar(ui: &mut egui::Ui, level: f32) {
-    let desired = Vec2::new(ui.available_width(), 18.0);
-    let (rect, _) = ui.allocate_exact_size(desired, Sense::hover());
-    let painter = ui.painter();
-    painter.rect_filled(rect, Rounding::same(6.0), Color32::from_rgb(0x0D, 0x0F, 0x12));
-    let level = level.clamp(0.0, 1.0);
-    if level > 0.0 {
-        let mut fill = rect;
-        fill.set_width(rect.width() * level);
-        let color = if level < 0.6 {
-            theme::OK
-        } else if level < 0.85 {
-            theme::WARN
-        } else {
-            theme::BAD
-        };
-        painter.rect_filled(fill, Rounding::same(6.0), color);
-    }
-    painter.rect_stroke(rect, Rounding::same(6.0), Stroke::new(1.0_f32, theme::LINE));
 }

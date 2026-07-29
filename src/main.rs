@@ -27,9 +27,12 @@ mod streaming;
 mod theme;
 mod transcribe;
 mod tray;
-mod ui_dictation;
-mod ui_mic;
-mod ui_models;
+mod ui_engine;
+mod ui_input;
+mod ui_kit;
+mod ui_main;
+mod ui_shell;
+mod ui_system;
 mod userinput;
 mod vad;
 
@@ -53,8 +56,8 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("TVOICE")
-            .with_inner_size([400.0, 600.0])
-            .with_min_inner_size([360.0, 460.0])
+            .with_inner_size([720.0, 700.0])
+            .with_min_inner_size([600.0, 520.0])
             .with_position(if hidden {
                 egui::pos2(-32000.0, -32000.0)
             } else {
