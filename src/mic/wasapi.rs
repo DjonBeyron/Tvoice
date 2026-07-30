@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
 use windows::core::PCWSTR;
@@ -292,6 +292,21 @@ pub fn run_capture(
             l.rate.store(sample_rate, Ordering::Relaxed);
         }
 
+        // Полный разбор формата в лог. Диктовка читает сырой буфер по этим числам, и если
+        // драйвер отдаёт не то, что мы решили («16 бит» в эксклюзивном режиме), сэмплы
+        // получаются громким мусором: индикатор дёргается, VAD видит речь, а whisper —
+        // ничего. По тексту в окне такое не отличить от «просто не распозналось».
+        crate::logln!(
+            "mic: формат {mode} — {sample_rate} Гц, {n_channels} кан, {bits} бит, \
+             {} | mix-формат: тег 0x{mix_tag:04X}, {mix_rate} Гц, {mix_channels} кан, {mix_bits} бит",
+            if is_float { "float" } else { "PCM" }
+        );
+        if !is_float && bits != 16 {
+            crate::logln!(
+                "mic: ВНИМАНИЕ — {bits}-битный PCM не разбирается, живой буфер останется пустым"
+            );
+        }
+
         // Открываем WAV, если запрошена запись.
         let mut writer: Option<WavWriter> = match &record {
             Some(path) => match WavWriter::create(path, n_channels, sample_rate) {
@@ -315,6 +330,11 @@ pub fn run_capture(
         client.Start()?;
 
         let mut shown = 0f32;
+        // Один раз предупреждаем о неразбираемом формате и раз в секунду отчитываемся о
+        // живом буфере: по нему видно, растёт ли он вообще и совпадает ли темп роста с
+        // частотой захвата. Рассинхрон буфера и окна диктовки иначе не поймать.
+        let mut warned_format = false;
+        let mut next_report = Instant::now();
         while !stop.load(Ordering::Relaxed) {
             let mut packet = capture_client.GetNextPacketSize()?;
             if packet == 0 {
@@ -385,11 +405,22 @@ pub fn run_capture(
                                 }
                             }
                         }
-                    } else if let Some(w) = writer.as_mut() {
-                        // Неизвестный формат — пишем тишину, чтобы сохранить длительность.
-                        pcm.clear();
-                        pcm.resize(sample_count, 0);
-                        let _ = w.write_i16(&pcm);
+                    } else {
+                        // Неизвестный формат: в живой буфер не попадает НИЧЕГО, поэтому
+                        // диктовка молчит при исправном захвате. Пишем один раз, но громко.
+                        if !warned_format {
+                            warned_format = true;
+                            crate::logln!(
+                                "mic: ФОРМАТ НЕ РАЗБИРАЕТСЯ ({bits} бит, float={is_float}) — \
+                                 в живой буфер не попадёт ни одного сэмпла"
+                            );
+                        }
+                        if let Some(w) = writer.as_mut() {
+                            // В файл пишем тишину, чтобы сохранить длительность.
+                            pcm.clear();
+                            pcm.resize(sample_count, 0);
+                            let _ = w.write_i16(&pcm);
+                        }
                     }
                 }
 
@@ -404,6 +435,15 @@ pub fn run_capture(
                 shown * 0.82 + frame_peak * 0.18
             };
             level.store(shown.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+
+            if let (Some(l), true) = (&live, Instant::now() >= next_report) {
+                next_report = Instant::now() + Duration::from_secs(1);
+                let filled = l.buf.lock().map(|b| b.len()).unwrap_or(0);
+                crate::logln!(
+                    "mic: живой буфер {filled} сэмплов ({:.1}с @{sample_rate} Гц), пик кадра {frame_peak:.4}, индикатор {shown:.4}",
+                    filled as f32 / sample_rate.max(1) as f32
+                );
+            }
 
             thread::sleep(Duration::from_millis(16));
         }

@@ -21,7 +21,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIcon, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu,
     DestroyWindow, DispatchMessageW, FindWindowW, GetCursorPos, GetMessageW, GetWindowLongPtrW,
     GetWindowThreadProcessId, PostQuitMessage, RegisterClassW, SetForegroundWindow,
-    SetWindowLongPtrW, ShowWindow, TrackPopupMenu, TranslateMessage, GWL_EXSTYLE, HMENU,
+    SendMessageW, SetWindowLongPtrW, ShowWindow, TrackPopupMenu, TranslateMessage, GWL_EXSTYLE,
+    HMENU, ICON_BIG, ICON_SMALL, WM_SETICON,
     MF_SEPARATOR, MF_STRING, MSG, SW_HIDE, SW_SHOWNOACTIVATE, TPM_BOTTOMALIGN, TPM_RIGHTALIGN,
     WM_APP, WM_COMMAND, WM_DESTROY, WM_LBUTTONDBLCLK, WM_RBUTTONUP, WNDCLASSW, WS_EX_TOOLWINDOW,
     WS_OVERLAPPED,
@@ -209,7 +210,7 @@ unsafe fn run(tip: &str, slot: Arc<Mutex<isize>>) {
     let mut data = icon_data(hwnd);
     data.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     data.uCallbackMessage = WM_TRAY;
-    data.hIcon = make_icon();
+    data.hIcon = make_icon(32);
     write_tip(&mut data, tip);
     if Shell_NotifyIconW(NIM_ADD, &data).as_bool() {
         crate::logln!("tray: значок создан");
@@ -285,15 +286,39 @@ unsafe fn show_menu(hwnd: HWND) {
 
 /// Значок трея — тот же рисунок, что у индикатора диктовки (см. `hud::icon_pixels`),
 /// чтобы приложение узнавалось по одной и той же форме и в трее, и на экране.
-unsafe fn make_icon() -> windows::Win32::UI::WindowsAndMessaging::HICON {
-    const S: i32 = 32;
-    let px = crate::hud::icon_pixels(S);
+unsafe fn make_icon(size: i32) -> windows::Win32::UI::WindowsAndMessaging::HICON {
+    let s = size;
+    let px = crate::hud::icon_pixels(s);
     let mut bgra = Vec::with_capacity(px.len() * 4);
     for p in &px {
         bgra.extend_from_slice(&p.to_le_bytes());
     }
-    let and_mask = vec![0u8; (S * S / 8) as usize];
+    let and_mask = vec![0u8; (s * s / 8) as usize];
     let hinst: windows::Win32::Foundation::HINSTANCE =
         GetModuleHandleW(None).map(Into::into).unwrap_or_default();
-    CreateIcon(hinst, S, S, 1, 32, and_mask.as_ptr(), bgra.as_ptr()).unwrap_or_default()
+    CreateIcon(hinst, s, s, 1, 32, and_mask.as_ptr(), bgra.as_ptr()).unwrap_or_default()
+}
+
+/// Поставить окну приложения тот же значок, что и в трее.
+///
+/// eframe задаёт значок при создании окна, но до заголовка и панели задач он доходит
+/// не всегда. `WM_SETICON` работает надёжно: отдельно мелкий значок для заголовка и
+/// крупный для Alt+Tab и панели задач.
+pub fn set_window_icon() {
+    unsafe {
+        let Some(hwnd) = main_window() else {
+            crate::logln!("tray: окно не найдено — значок приложения не поставлен");
+            return;
+        };
+        let big = make_icon(32);
+        let small = make_icon(16);
+        SendMessageW(hwnd, WM_SETICON, WPARAM(ICON_BIG as usize), LPARAM(big.0 as isize));
+        SendMessageW(
+            hwnd,
+            WM_SETICON,
+            WPARAM(ICON_SMALL as usize),
+            LPARAM(small.0 as isize),
+        );
+        crate::logln!("tray: значок приложения установлен");
+    }
 }

@@ -51,6 +51,25 @@ pub const MODE_CLIPBOARD: u8 = 2;
 pub const DEFAULT_CHAR_DELAY_US: u32 = 8000;
 static CHAR_DELAY_US: AtomicU32 = AtomicU32::new(DEFAULT_CHAR_DELAY_US);
 
+/// Наименьший зазор между Backspace'ами.
+///
+/// Было 3мс — и этого не хватало. `SendInput` только ставит события в очередь и сообщает
+/// об успехе всегда, а Блокнот Windows 11 (RichEdit/TSF) разбирает ввод асинхронно, поэтому
+/// часть удалений терялась молча: в логе «стёрто 21 симв.», а в окне эти 21 символ
+/// оставались, и следом дописывался новый текст — отсюда «Ты пришёл научиться. Ты пришёл
+/// научиться строить фразы.» вместо «Ты пришёл научиться строить фразы.» и одиночные
+/// «пришёёл»/«ннабор».
+///
+/// Запас берём больше, чем для печати (там граница надёжности 5–8мс): потерянное удаление
+/// портит текст, а потерянный символ — всего лишь заметная опечатка. Правки после починки
+/// склейки черновика короткие (единицы символов), так что лишние миллисекунды не заметны.
+const MIN_BACKSPACE_DELAY_US: u32 = 12_000;
+
+/// Зазор между удалениями: не меньше безопасного, но следует настройке, если она больше.
+fn backspace_delay() -> Duration {
+    Duration::from_micros(CHAR_DELAY_US.load(Ordering::Relaxed).max(MIN_BACKSPACE_DELAY_US) as u64)
+}
+
 pub fn set_char_delay_us(us: u32) {
     CHAR_DELAY_US.store(us, Ordering::Relaxed);
 }
@@ -122,11 +141,12 @@ pub fn replace_text(back: usize, text: &str) {
     let t0 = Instant::now();
     // Backspace — обычная клавиша (не VK_PACKET), но шлём с зазором: приложение должно
     // успеть обработать каждое удаление, иначе стираем меньше, чем просили.
+    let gap = backspace_delay();
     for _ in 0..back {
         if !send_batch(&[key_vk(VK_BACK.0, false), key_vk(VK_BACK.0, true)]) {
             break;
         }
-        spin(Duration::from_millis(3));
+        spin(gap);
     }
     crate::logln!(
         "inject: стёрто {back} симв. за {:.0}мс",

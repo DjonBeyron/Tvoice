@@ -3,7 +3,7 @@
 //! Все они печатают в окно-приёмник, поэтому у каждого есть предохранитель по заголовку
 //! окна: если фокус ушёл, тест обрывается, а не набирает текст в чужой документ.
 
-use crate::{hud, inject, overlay, streaming};
+use crate::{hud, inject, overlay, streaming, transcribe};
 
 /// Разобрать аргументы самотестов. `true` — режим отработал.
 pub fn dispatch(args: &[String]) -> bool {
@@ -44,6 +44,17 @@ pub fn dispatch(args: &[String]) -> bool {
             for (n, v) in overlay::simulate_pulse(&levels).iter().enumerate() {
                 let bar = "#".repeat((v * 40.0).round() as usize);
                 println!("{:>5}мс уровень={:.3} → {v:.2} {bar}", n * 33, levels[n]);
+            }
+            return true;
+        }
+
+        // Файл значка для встраивания в .exe: `--icon-file <файл.ico>`.
+        // Рисуется тем же генератором, что значок трея, — держать их врозь нельзя.
+        if let Some(i) = args.iter().position(|a| a == "--icon-file") {
+            let out = args.get(i + 1).cloned().unwrap_or_else(|| "tvoice.ico".into());
+            match write_ico(&out, &[16, 24, 32, 48, 64, 128]) {
+                Ok(n) => println!("значок записан: {out} ({n} байт)"),
+                Err(e) => println!("не записать {out}: {e}"),
             }
             return true;
         }
@@ -127,6 +138,24 @@ pub fn dispatch(args: &[String]) -> bool {
             let drafts: Vec<String> = args[(i + 1).min(args.len())..].to_vec();
             for (n, (back, add, shown)) in streaming::simulate(&drafts).iter().enumerate() {
                 println!("{n}: -{back} +{add} → {shown:?}");
+            }
+            return true;
+        }
+
+        // Склейка сегментов whisper: `--whisper-norm <файл_с_сырым_ответом>` печатает
+        // строки как они пришли и результат склейки. Нужно, чтобы видеть текстом, что
+        // перенос строки посреди слова не превращается в пробел («готов» + «ый»).
+        if let Some(i) = args.iter().position(|a| a == "--whisper-norm") {
+            let path = args.get(i + 1).cloned().unwrap_or_default();
+            match std::fs::read_to_string(&path) {
+                Ok(raw) => {
+                    println!("сырой ответ, {} строк:", raw.lines().count());
+                    for l in raw.lines() {
+                        println!("  |{l}|");
+                    }
+                    println!("после склейки:\n  {:?}", transcribe::normalize(&raw));
+                }
+                Err(e) => println!("не прочитать {path:?}: {e}"),
             }
             return true;
         }
@@ -306,4 +335,55 @@ fn write_bmp(path: &str, tw: usize, th: usize, out: &[u32]) {
         Ok(()) => println!("индикатор нарисован в {path} ({tw}×{th})"),
         Err(e) => println!("не удалось записать {path}: {e}"),
     }
+}
+
+/// Записать .ico с несколькими размерами. Каждый кадр — 32-битный DIB с альфой:
+/// формат древний, но понимают его все версии Windows, а PNG внутри .ico — не все.
+fn write_ico(path: &str, sizes: &[i32]) -> std::io::Result<usize> {
+    let mut images: Vec<Vec<u8>> = Vec::new();
+    for &s in sizes {
+        let px = hud::icon_pixels(s);
+        let (w, h) = (s as u32, s as u32);
+        let mut img = Vec::new();
+        // BITMAPINFOHEADER: высота удвоена — за цветом идёт маска прозрачности.
+        img.extend_from_slice(&40u32.to_le_bytes());
+        img.extend_from_slice(&w.to_le_bytes());
+        img.extend_from_slice(&(h * 2).to_le_bytes());
+        img.extend_from_slice(&1u16.to_le_bytes());
+        img.extend_from_slice(&32u16.to_le_bytes());
+        img.extend_from_slice(&[0u8; 24]);
+        // Цвет: строки снизу вверх, BGRA.
+        for y in (0..s).rev() {
+            for x in 0..s {
+                img.extend_from_slice(&px[(y * s + x) as usize].to_le_bytes());
+            }
+        }
+        // Маска: не нужна при 32 битах, но структура её требует — кладём нули.
+        let stride = ((s as usize + 31) / 32) * 4;
+        img.extend(std::iter::repeat(0u8).take(stride * s as usize));
+        images.push(img);
+    }
+
+    let mut out = Vec::new();
+    out.extend_from_slice(&0u16.to_le_bytes()); // зарезервировано
+    out.extend_from_slice(&1u16.to_le_bytes()); // тип: значок
+    out.extend_from_slice(&(sizes.len() as u16).to_le_bytes());
+    let mut offset = 6 + 16 * sizes.len();
+    for (&s, img) in sizes.iter().zip(&images) {
+        // 256 в каталоге записывается нулём — байт больше не вмещает.
+        out.push(if s >= 256 { 0 } else { s as u8 });
+        out.push(if s >= 256 { 0 } else { s as u8 });
+        out.push(0); // палитры нет
+        out.push(0);
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&32u16.to_le_bytes());
+        out.extend_from_slice(&(img.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(offset as u32).to_le_bytes());
+        offset += img.len();
+    }
+    for img in &images {
+        out.extend_from_slice(img);
+    }
+    std::fs::write(path, &out)?;
+    Ok(out.len())
 }

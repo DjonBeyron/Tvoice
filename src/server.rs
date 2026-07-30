@@ -270,5 +270,7 @@ fn post_inference(port: u16, wav: &Path) -> Result<String> {
         .map_err(|e| anyhow!("запрос к серверу: {e}"))?;
 
     let text = resp.into_string()?;
-    Ok(text.split_whitespace().collect::<Vec<_>>().join(" "))
+    // Склейка сегментов — не «сжать все пробелы»: перевод строки может стоять посреди
+    // слова, см. `transcribe::normalize`.
+    Ok(crate::transcribe::normalize(&text))
 }

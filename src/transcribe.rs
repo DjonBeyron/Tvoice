@@ -70,7 +70,48 @@ pub fn transcribe(wav16k: &Path, model_file: &str, lang: &str) -> Result<String>
     Ok(normalize(&text))
 }
 
-/// Убираем лишние пробелы/переводы строк из результата whisper.
-fn normalize(raw: &str) -> String {
-    raw.split_whitespace().collect::<Vec<_>>().join(" ")
+/// Склеить вывод whisper в одну строку.
+///
+/// whisper отдаёт текст сегментами, каждый на своей строке, и ведущий пробел — часть
+/// текста сегмента, а не разделитель строк. Когда граница сегмента попадает ВНУТРЬ слова,
+/// продолжение идёт без пробела:
+///
+/// ```text
+/// Первое, что нужно понять - английский - это не набор готов
+/// ый
+/// ```
+///
+/// Поэтому перевод строки нельзя заменять пробелом — из «готовых» получалось «готов ых»
+/// (а из «искусственный» — «искус ственный»). Строки склеиваем как есть; пробел
+/// добавляем только там, где разрыв внутри слова невозможен — после знака препинания.
+pub fn normalize(raw: &str) -> String {
+    let mut glued = String::with_capacity(raw.len());
+    for line in raw.lines() {
+        if glued.ends_with(SENTENCE_END) {
+            glued.push(' ');
+        }
+        glued.push_str(line);
+    }
+    squeeze(&glued)
+}
+
+/// Знаки, после которых слово точно закончилось.
+const SENTENCE_END: [char; 10] = ['.', '!', '?', ',', ';', ':', '…', '»', '"', '\''];
+
+/// Свернуть подряд идущие пробельные символы в один и обрезать края.
+fn squeeze(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        if ch.is_whitespace() {
+            if !out.is_empty() && !out.ends_with(' ') {
+                out.push(' ');
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    while out.ends_with(' ') {
+        out.pop();
+    }
+    out
 }

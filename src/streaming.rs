@@ -9,7 +9,7 @@
 //! На паузе фраза фиксируется: дальше её уже не трогаем — переписывать разрешено только
 //! незавершённую фразу, и только пока пользователь сам не притронулся к клавиатуре/мыши.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -44,6 +44,21 @@ const MAX_REWRITE: usize = 120;
 /// стирался и набирался заново весь хвост, и текст в окне мигал. Начало фразы после
 /// нескольких слов уже не меняется по смыслу, поэтому его замораживаем.
 const TAIL_WORDS: usize = 4;
+/// На сколько слов новая гипотеза может разойтись с показанной в начале фразы.
+///
+/// Whisper от уточнения к уточнению то склеивает, то разбивает начало («О, привет!» одним
+/// сегментом или двумя), из-за чего номера слов съезжают. Столько сдвига прощаем при
+/// поиске места склейки.
+const WORD_SHIFT: usize = 3;
+/// Где искать межсловную паузу, когда фраза упёрлась в лимит длины.
+const GAP_SEARCH: Duration = Duration::from_millis(1500);
+/// Сколько тишины оставляем в буфере на случай, что речь уже началась.
+///
+/// Обрезали вплотную — и мягкое начало фразы уезжало вместе с тишиной: VAD признаёт речь
+/// только после RISE кадров подряд выше порога, а всё, что было до этого, уже считалось
+/// тишиной и выбрасывалось. whisper получал фразу без первых слов («сразу говорить…»
+/// вместо «я начинаю сразу говорить…»).
+const PREROLL: Duration = Duration::from_millis(400);
 
 pub fn run(
     live: LiveCapture,
@@ -127,9 +142,11 @@ pub fn run(
 
             if !boundary {
                 if !seg.has_speech {
-                    // Одна тишина: сдвигаем окно, чтобы whisper не жевал её каждый раз.
+                    // Одна тишина: сдвигаем окно, чтобы whisper не жевал её каждый раз,
+                    // но оставляем запас — начало фразы может быть уже в этой «тишине».
                     if phrase > PAUSE {
-                        committed += seg.analysed;
+                        let preroll = PREROLL.as_millis() as usize * rate / 1000;
+                        committed += seg.analysed.saturating_sub(preroll);
                     }
                     set_state(&status, &ctx, "Слушаю… (говорите)");
                     thread::sleep(TICK);
@@ -143,13 +160,15 @@ pub fn run(
 
                 let t0 = Instant::now();
                 let cut = cut_len(&seg, rate);
-                let hyp = hypothesis(&snapshot(&live, committed, cut), rate, &wav, &model_file, &lang);
+                let chunk = snapshot(&live, committed, cut);
+                let sound = audio::stats(&chunk, rate as u32);
+                let hyp = hypothesis(&chunk, rate, &wav, &model_file, &lang);
                 // Не душим GPU: тяжёлой модели даём время между уточнениями.
                 next_draft = Instant::now() + DRAFT_EVERY.max(t0.elapsed().mul_f32(1.5));
                 drafts += 1;
                 if let Some(text) = hyp {
                     crate::logln!(
-                        "stream: черновик {:.1}с → {:.2}с: {text:?}",
+                        "stream: черновик {:.1}с → {:.2}с | {sound} | {text:?}",
                         secs(cut).as_secs_f32(),
                         t0.elapsed().as_secs_f32()
                     );
@@ -161,12 +180,33 @@ pub fn run(
             }
 
             // Граница фразы: последнее уточнение — и фиксируем.
-            let reason = if stopping {
-                "стоп"
-            } else if phrase >= MAX_PHRASE {
-                "лимит длины"
-            } else {
-                "пауза"
+            //
+            // На лимите длины речь ещё идёт, и резать «где застали» нельзя: разрез
+            // попадает посреди слова. Ищем ближайшую межсловную паузу и режем по ней —
+            // после `commit()` фраза уже не исправится.
+            let limit = !stopping && silence < PAUSE && phrase >= MAX_PHRASE;
+            let gap = limit
+                .then(|| vad.quietest(committed, GAP_SEARCH.as_millis() as usize * rate / 1000))
+                .flatten()
+                // Нулевой разрез не сдвинул бы окно — это вечный цикл. Такой не берём.
+                .filter(|&g| g > 0);
+            let reason = match (stopping, limit, gap.is_some()) {
+                (true, ..) => "стоп",
+                (_, true, true) => "лимит длины, разрез по паузе",
+                (_, true, false) => "лимит длины",
+                _ => "пауза",
+            };
+            // Кусок для распознавания и на сколько сдвинуть окно. По паузе режем ровно в
+            // тихой точке: слева и справа от неё звук чистый, поэтому ни хвост, ни
+            // перекрытие не нужны.
+            let (cut, advance) = match gap {
+                Some(g) => (g, g),
+                None => (
+                    cut_len(&seg, rate),
+                    // Хвост тишины оставляем в буфере: если VAD ошибся и принял начало
+                    // следующего слова за тишину, оно не должно пропасть со сдвигом окна.
+                    (seg.speech_end + rate * 3 / 10).min(seg.analysed),
+                ),
             };
             if seg.has_speech && voiced < MIN_PHRASE {
                 // Короткий всплеск (стук, кашель, слог из соседней комнаты): распознавать
@@ -178,15 +218,16 @@ pub fn run(
             } else if seg.has_speech {
                 phrases += 1;
                 let t0 = Instant::now();
-                let cut = cut_len(&seg, rate);
-                let hyp = hypothesis(&snapshot(&live, committed, cut), rate, &wav, &model_file, &lang);
+                let chunk = snapshot(&live, committed, cut);
+                let sound = audio::stats(&chunk, rate as u32);
+                let hyp = hypothesis(&chunk, rate, &wav, &model_file, &lang);
                 if let Some(text) = hyp {
                     if !text.is_empty() {
                         target.update(&text);
                     }
                 }
                 crate::logln!(
-                    "stream[{phrases}]: граница ({reason}), речь {:.1}с из {:.1}с, отправлено {:.1}с → {:.2}с: {:?}",
+                    "stream[{phrases}]: граница ({reason}), речь {:.1}с из {:.1}с, отправлено {:.1}с → {:.2}с | {sound} | окно {committed}..+{cut} | {:?}",
                     voiced.as_secs_f32(),
                     phrase.as_secs_f32(),
                     secs(cut).as_secs_f32(),
@@ -195,9 +236,7 @@ pub fn run(
                 );
             }
             target.commit();
-            // Хвост тишины оставляем в буфере: если VAD ошибся и принял начало следующего
-            // слова за тишину, оно не должно пропасть вместе со сдвигом окна.
-            committed += (seg.speech_end + rate * 3 / 10).min(seg.analysed);
+            committed += advance;
             next_draft = Instant::now();
             if stopping {
                 break;
@@ -262,10 +301,12 @@ impl Target {
         // Всё, кроме последних слов, оставляем как есть — правки в глубине фразы
         // (обычно скачущая запятая) не стоят перенабора всего хвоста.
         let frozen = self.words.len().saturating_sub(TAIL_WORDS);
+        let Some(tail) = tail_start(&self.words[..frozen], &fresh) else {
+            crate::logln!("stream: уточнение пропущено — не сошлось с началом показанной фразы");
+            return;
+        };
         let mut next: Vec<String> = self.words[..frozen].to_vec();
-        if fresh.len() > frozen {
-            next.extend(fresh[frozen..].iter().map(|s| s.to_string()));
-        }
+        next.extend(fresh[tail..].iter().map(|s| s.to_string()));
         let body = next.join(" ");
         let want = if self.prior {
             format!(" {body}")
@@ -276,8 +317,20 @@ impl Target {
             return;
         }
         let keep = common_prefix(&self.shown, &want);
-        let back = self.shown.chars().count() - keep;
-        let add: String = want.chars().skip(keep).collect();
+        let mut back = self.shown.chars().count() - keep;
+        let mut add: String = want.chars().skip(keep).collect();
+        // Вставку нельзя начинать с пробела. В поле ввода на contenteditable (мессенджер в
+        // браузере) ведущий пробел вставки пропадает, и слова слипаются: черновик
+        // «я начинаю сразу говорить» вставляется как «сразу» + « говорить», а в окне
+        // получается «сразуговорить». В Блокноте этого не видно — потому и вылезло не сразу.
+        // Сдвигаем границу правки на один символ назад: пробел оказывается ВНУТРИ вставки,
+        // где его уже никто не съедает, а лишний стёртый символ мы тут же печатаем заново.
+        if add.starts_with(' ') && keep > 0 {
+            if let Some(prev) = want.chars().nth(keep - 1) {
+                back += 1;
+                add.insert(0, prev);
+            }
+        }
         if back > MAX_REWRITE {
             // Whisper переосмыслил фразу целиком: столько стирать нельзя — пропускаем
             // это уточнение (черновик остаётся прежним) и ждём следующего.
@@ -317,6 +370,50 @@ impl Target {
     }
 }
 
+/// С какого слова новой гипотезы начинается ещё не замороженный хвост фразы.
+///
+/// Брать `fresh[frozen..]` по номеру нельзя. Whisper между уточнениями то добавляет, то
+/// убирает слово в начале фразы, и склейка по индексу тогда либо дублирует слово, либо
+/// съедает его: «Это система из маленьких конструкций.» превратилось в «Это маленьких
+/// конструкторов.» — «система из» пропали, а правка выросла с 5 символов до 33 (чем больше
+/// правка, тем больше шансов, что часть удалений потеряется по пути в окно).
+///
+/// Поэтому ищем последнее замороженное слово («якорь») рядом с ожидаемым местом и режем
+/// сразу за ним. Идём от ожидаемой позиции наружу: ближайшее совпадение вернее дальнего,
+/// иначе повторяющееся во фразе слово утащило бы разрез не туда. Не нашли вовсе — склеивать
+/// наугад нельзя, уточнение лучше пропустить и дождаться следующего.
+fn tail_start(frozen: &[String], fresh: &[&str]) -> Option<usize> {
+    let Some(anchor) = frozen.last() else {
+        return Some(0); // ничего не заморожено — фраза набирается целиком
+    };
+    let want = frozen.len() - 1;
+    (0..=WORD_SHIFT)
+        .flat_map(|d| [want + d, want.saturating_sub(d)])
+        .find(|&i| fresh.get(i).is_some_and(|w| same_word(w, anchor)))
+        .map(|i| i + 1)
+}
+
+/// Одно ли это слово «по существу»: без пунктуации, без регистра и не различая е/ё.
+///
+/// Якорь склейки — обычное слово из гипотезы, а whisper от уточнения к уточнению меняет у
+/// слов ровно оформление: «привет!»/«привет.», «пришёл»/«пришел», `"I'm`/`«I'm`. Сравнивать
+/// буквально нельзя — якорь «терялся» на ровном месте, и уточнение пропадало целиком,
+/// оставляя в окне заведомо неверный текст до следующего круга.
+fn same_word(a: &str, b: &str) -> bool {
+    let core = |s: &str| {
+        s.chars()
+            .filter(|c| c.is_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .map(|c| if c == 'ё' { 'е' } else { c })
+            .collect::<String>()
+    };
+    let (ca, cb) = (core(a), core(b));
+    if ca.is_empty() || cb.is_empty() {
+        return a == b; // сплошная пунктуация — сравнивать нечего, кроме неё самой
+    }
+    ca == cb
+}
+
 /// Прогнать последовательность «черновиков» через ту же логику правки без вставки:
 /// показывает, сколько символов пришлось бы стереть и дописать на каждом шаге.
 /// Нужно, чтобы проверять числом, что текст в окне не переписывается целиком.
@@ -348,7 +445,18 @@ pub fn common_prefix(a: &str, b: &str) -> usize {
 fn snapshot(live: &LiveCapture, from: usize, len: usize) -> Vec<f32> {
     let b = live.buf.lock().unwrap();
     let end = (from + len).min(b.len());
-    b.get(from..end).map(<[f32]>::to_vec).unwrap_or_default()
+    let got = b.get(from..end).map(<[f32]>::to_vec).unwrap_or_default();
+    if got.len() < len {
+        // Окно ушло за конец буфера: либо захват отстал, либо `committed` уехал вперёд и
+        // VAD размечает речь по кадрам, которых в буфере уже/ещё нет. Снаружи это выглядит
+        // как «диктовка молчит», поэтому пишем громко, а не глотаем.
+        crate::logln!(
+            "stream: ОКНО КОРОЧЕ ЗАПРОСА — просили {len}, взяли {} (от {from}, в буфере {})",
+            got.len(),
+            b.len()
+        );
+    }
+    got
 }
 
 /// Распознать кусок (пусто — если тишина/мусор/ошибка).
@@ -359,7 +467,9 @@ fn hypothesis(
     model_file: &str,
     lang: &str,
 ) -> Option<String> {
-    if audio::write_16k_wav_from_mono(seg, rate as u32, wav).is_err() {
+    let secs = seg.len() as f32 / rate.max(1) as f32;
+    if let Err(e) = audio::write_16k_wav_from_mono(seg, rate as u32, wav) {
+        crate::logln!("stream: не записать wav ({} сэмплов @{rate} Гц): {e}", seg.len());
         return None;
     }
     let text = match server::transcribe(wav, model_file, lang) {
@@ -370,11 +480,46 @@ fn hypothesis(
         }
     };
     let clean = text.trim().to_string();
-    if is_hallucination(&clean) {
-        crate::logln!("stream: отброшено как галлюцинация: {clean:?}");
+    let junk = is_hallucination(&clean);
+    if junk || clean.is_empty() {
+        // Ровно тот случай, который снаружи выглядит как «диктовка не работает»: звук идёт,
+        // индикатор дёргается, а текста нет. По тексту ответа причину не отличить, поэтому
+        // печатаем признаки звука и сохраняем сам кусок — его можно послушать.
+        crate::logln!(
+            "stream: ПУСТО {} — whisper вернул {clean:?} | звук {secs:.2}с @{rate} Гц: {}",
+            if junk { "(заготовка)" } else { "(пустой ответ)" },
+            audio::stats(seg, rate as u32)
+        );
+        dump_chunk(seg, rate);
         return Some(String::new());
     }
     Some(clean)
+}
+
+/// Сколько «пустых» кусков сохраняем за запуск приложения.
+const DUMPS: usize = 8;
+
+/// Сохранить кусок, на котором распознавание ничего не дало.
+///
+/// Без записи причина неотличима: по логу видно только, что текста нет. С файлом можно
+/// послушать звук и прогнать его вручную через whisper. Число ограничено — сеанс не должен
+/// забить диск, а для разбора хватает первых.
+fn dump_chunk(seg: &[f32], rate: usize) {
+    static SAVED: AtomicUsize = AtomicUsize::new(0);
+    let n = SAVED.fetch_add(1, Ordering::Relaxed);
+    if n >= DUMPS {
+        return;
+    }
+    let dir = models::app_dir().join("debug");
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        crate::logln!("stream: не создать {}: {e}", dir.display());
+        return;
+    }
+    let path = dir.join(format!("empty_{n:02}.wav"));
+    match audio::write_16k_wav_from_mono(seg, rate as u32, &path) {
+        Ok(()) => crate::logln!("stream: пустой кусок сохранён — {}", path.display()),
+        Err(e) => crate::logln!("stream: не сохранить кусок: {e}"),
+    }
 }
 
 /// Whisper на тишине/шуме любит выдавать заготовки из титров — их вставлять нельзя.

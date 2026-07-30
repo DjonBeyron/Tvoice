@@ -43,6 +43,16 @@ pub fn dispatch(args: &[String]) -> bool {
             vad_test(secs);
             return true;
         }
+        // Разбор VAD по готовому файлу: `--vad-file <wav>`.
+        //
+        // В отличие от `--vad-test`, микрофон не трогает: прогон повторяем, поэтому им можно
+        // сравнивать поведение VAD до и после правки на одном и том же звуке. Без этого
+        // «стало лучше» проверить нечем — порог живёт от уровня фона, а фон каждый раз свой.
+        if let Some(i) = args.iter().position(|a| a == "--vad-file") {
+            let path = args.get(i + 1).cloned().unwrap_or_default();
+            vad_file(&path);
+            return true;
+        }
         if args.iter().any(|a| a == "--rec-test") {
             let secs = args
                 .iter()
@@ -174,6 +184,42 @@ fn selftest_stt() {
 
 /// Диагностика микрофона и VAD: пишем `secs` секунд и раскладываем запись по полочкам —
 /// частота, уровень фона, порог, найденные участки речи. Всё уходит в tvoice.log.
+/// Прогнать VAD по файлу и напечатать разметку — воспроизводимая проверка порога.
+fn vad_file(path: &str) {
+    let (mono, rate) = match audio::read_wav_mono(std::path::Path::new(path)) {
+        Ok(v) => v,
+        Err(e) => {
+            println!("не прочитать {path}: {e}");
+            return;
+        }
+    };
+    let rate = (rate as usize).max(1);
+    let s = |n: usize| n as f32 / rate as f32;
+    println!(
+        "{path}\n  {:.1}с @ {rate} Гц | {}",
+        s(mono.len()),
+        audio::stats(&mono, rate as u32)
+    );
+
+    let mut v = vad::Vad::new(rate);
+    v.feed(&mono);
+    let seg = v.segment(0);
+    println!(
+        "  шум={:.4}±{:.4} порог={:.4} | речи {:.1}с из {:.1}с, конец речи {:.1}с",
+        v.noise(),
+        v.dev(),
+        v.on(),
+        s(seg.speech),
+        s(seg.analysed),
+        s(seg.speech_end)
+    );
+    let spans = v.spans();
+    println!("  участков речи: {}", spans.len());
+    for (a, b) in spans.iter().take(20) {
+        println!("    {:6.2} – {:6.2}с  ({:.2}с)", s(*a), s(*b), s(b - a));
+    }
+}
+
 fn vad_test(secs: u64) {
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::sync::mpsc::channel;

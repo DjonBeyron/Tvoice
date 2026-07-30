@@ -9,6 +9,75 @@ use crate::mic::wav::WavWriter;
 
 const TARGET_RATE: u32 = 16_000;
 
+/// Признаки куска звука — чтобы по логу отличать тишину от речи, а речь от мусора.
+///
+/// Когда распознавание возвращает заготовку из титров («Продолжение следует…»), по одному
+/// тексту не понять, что случилось: звука не было вовсе, он был тишиной, или в буфер попал
+/// мусор (скажем, формат прочитан не тем разрядом — тогда сэмплы «громкие», но не речь).
+/// Эти числа различают все случаи, а считаются одним проходом по уже готовому куску.
+pub struct Stats {
+    /// Средняя энергия: у речи 0.02–0.1, у тишины — единицы тысячных.
+    pub rms: f32,
+    pub peak: f32,
+    /// Постоянная составляющая: у исправного микрофона около нуля.
+    pub dc: f32,
+    /// Переходов через ноль в секунду: у речи сотни–тысячи, у шума и у неверно
+    /// прочитанного формата — десятки тысяч (почти частота дискретизации).
+    pub zcr: f32,
+    /// Доля ровно нулевых сэмплов: заметно больше нуля — в буфер писали тишину.
+    pub zeros: f32,
+    /// Доля сэмплов на пределе: признак перегруза (бывает в эксклюзивном режиме).
+    pub clipped: f32,
+}
+
+impl std::fmt::Display for Stats {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "rms={:.4} пик={:.4} пост={:+.4} нулей={:.1}% предел={:.1}% переходов={:.0}/с",
+            self.rms,
+            self.peak,
+            self.dc,
+            self.zeros * 100.0,
+            self.clipped * 100.0,
+            self.zcr
+        )
+    }
+}
+
+/// Посчитать признаки куска моно-звука.
+pub fn stats(mono: &[f32], rate: u32) -> Stats {
+    if mono.is_empty() {
+        return Stats { rms: 0.0, peak: 0.0, dc: 0.0, zcr: 0.0, zeros: 1.0, clipped: 0.0 };
+    }
+    let n = mono.len() as f32;
+    let dc = mono.iter().sum::<f32>() / n;
+    let (mut sq, mut peak) = (0f32, 0f32);
+    let (mut zeros, mut clipped, mut crossings) = (0usize, 0usize, 0usize);
+    for (i, &v) in mono.iter().enumerate() {
+        sq += v * v;
+        let a = v.abs();
+        peak = peak.max(a);
+        if v == 0.0 {
+            zeros += 1;
+        }
+        if a >= 0.999 {
+            clipped += 1;
+        }
+        if i > 0 && (mono[i - 1] < 0.0) != (v < 0.0) {
+            crossings += 1;
+        }
+    }
+    Stats {
+        rms: (sq / n).sqrt(),
+        peak,
+        dc,
+        zcr: crossings as f32 * rate.max(1) as f32 / n,
+        zeros: zeros as f32 / n,
+        clipped: clipped as f32 / n,
+    }
+}
+
 /// Записать моно-сэмплы (в диапазоне -1..1) как 16 кГц моно PCM16 WAV.
 /// Используется потоковым режимом: буфер захвата → временный wav для whisper.
 pub fn write_16k_wav_from_mono(mono: &[f32], in_rate: u32, output: &Path) -> Result<()> {

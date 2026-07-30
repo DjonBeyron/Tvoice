@@ -197,6 +197,7 @@ impl TvoiceApp {
     pub(crate) fn handle_tray(&mut self, ctx: &egui::Context) {
         if self.first_frame {
             self.first_frame = false;
+            crate::tray::set_window_icon();
             // Запуск сразу в трей: окно уже стоит за экраном, осталось убрать его кнопку.
             if self.hidden {
                 crate::tray::set_taskbar(false);
