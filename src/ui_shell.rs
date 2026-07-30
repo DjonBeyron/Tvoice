@@ -131,8 +131,15 @@ impl TvoiceApp {
                 // egui центрирует каждый элемент по его собственной рамке, и оптически
                 // они расходились — заголовок стоял выше чипа.
                 let row_h = 36.0;
-                let (rect, _) =
+                let (full, _) =
                     ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h), Sense::hover());
+                // Заголовок и кнопка стоят по той же колонке, что и карточки ниже: иначе на
+                // широком окне содержимое центрировано, а шапка разъезжается по краям.
+                let pad = column_pad(ui);
+                let rect = egui::Rect::from_min_max(
+                    egui::pos2(full.left() + pad, full.top()),
+                    egui::pos2((full.left() + pad + column_width(ui)).min(full.right()), full.bottom()),
+                );
                 let cy = rect.center().y;
 
                 let name = match self.route {
@@ -161,12 +168,16 @@ impl TvoiceApp {
                     let ctx = self.ctx.clone();
                     self.hide_window(&ctx);
                 }
-                // Линия под шапкой — граница между навигацией и содержимым.
+                // Линия под шапкой. Тянем её по колонке, а не по всему окну: линия во всю
+                // ширину при центрированном содержимом только подчёркивала бы пустые поля.
                 ui.add_space(t::SM);
-                let w = ui.available_width();
-                let (rect, _) = ui.allocate_exact_size(Vec2::new(w, 1.0), Sense::hover());
+                let (line, _) =
+                    ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
                 ui.painter().rect_filled(
-                    rect,
+                    egui::Rect::from_min_max(
+                        egui::pos2(line.left() + pad, line.top()),
+                        egui::pos2((line.left() + pad + column_width(ui)).min(line.right()), line.bottom()),
+                    ),
                     Rounding::ZERO,
                     t::OUTLINE.linear_multiply(0.4),
                 );
@@ -187,22 +198,24 @@ impl TvoiceApp {
         egui::Frame::none()
             .inner_margin(egui::Margin::symmetric(t::LG, t::MD))
             .show(ui, |ui| {
-                let mut tab = self.settings_tab;
-                k::tabs(
-                    ui,
-                    &mut tab,
-                    &[
-                        (SettingsTab::Engine, tr("Движок и модели", "Engine and models")),
-                        (SettingsTab::Hotkeys, tr("Ввод", "Input")),
-                        (SettingsTab::Privacy, tr("Микрофон и система", "Microphone and system")),
-                    ],
-                );
-                self.settings_tab = tab;
-                ui.add_space(t::MD);
-
                 // Ширину считаем ДО прокрутки: внутри неё доступная ширина больше
                 // реально видимой, и колонка получалась шире окна.
                 let w = column_width(ui);
+                let mut tab = self.settings_tab;
+                // Вкладки — по той же колонке, что и карточки под ними.
+                content_column(ui, w, |ui| {
+                    k::tabs(
+                        ui,
+                        &mut tab,
+                        &[
+                            (SettingsTab::Engine, tr("Движок и модели", "Engine and models")),
+                            (SettingsTab::Hotkeys, tr("Ввод", "Input")),
+                            (SettingsTab::Privacy, tr("Микрофон и система", "Microphone and system")),
+                        ],
+                    );
+                });
+                self.settings_tab = tab;
+                ui.add_space(t::MD);
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
@@ -216,34 +229,62 @@ impl TvoiceApp {
     }
 }
 
+/// Предел ширины колонки содержимого.
+///
+/// Тянуть карточки на всю ширину нельзя: строка в полтора экрана читается плохо, глазу
+/// тяжело возвращаться к началу следующей. Но и упираться в узкую колонку на широком
+/// мониторе незачем — отсюда предел, а не фиксированная ширина.
+const COLUMN_MAX: f32 = 860.0;
+
 /// Ширина колонки содержимого — считается от размеров окна, а не от доступной ширины.
 ///
 /// Внутри прокрутки egui сообщает больше места, чем видно на самом деле, и колонка
 /// раз за разом получалась шире окна. Геометрия окна известна точно: ширина минус
 /// боковая панель, поля и запас под полосу прокрутки.
 pub fn column_width(ui: &egui::Ui) -> f32 {
-    let screen = ui.ctx().screen_rect().width();
-    (screen - t::SIDEBAR - 2.0 * t::LG - t::SM)
-        .min(620.0)
-        .max(240.0)
+    room(ui).min(COLUMN_MAX).max(240.0)
 }
 
-/// Колонка содержимого заданной ширины — единая мера для всех экранов.
+/// Сколько места остаётся содержимому по горизонтали.
+fn room(ui: &egui::Ui) -> f32 {
+    ui.ctx().screen_rect().width() - t::SIDEBAR - 2.0 * t::LG - t::SM
+}
+
+/// Отступ слева, которым колонка ставится по центру свободного места.
+///
+/// Раньше колонка прижималась к левому краю, и на широком окне справа оставалась пустая
+/// полоса в половину экрана — выглядело так, будто окно не растянулось, а содержимое
+/// съехало. Той же мерой выравниваются шапка и вкладки настроек, иначе центрированные
+/// карточки разошлись бы с заголовком.
+pub fn column_pad(ui: &egui::Ui) -> f32 {
+    ((room(ui) - column_width(ui)) / 2.0).max(0.0)
+}
+
+/// Колонка содержимого заданной ширины, поставленная по центру свободного места.
+///
+/// Единая мера для всех экранов: и содержимое, и шапка, и вкладки настроек считают отступ
+/// одинаково, поэтому на любой ширине окна они стоят на одной вертикали.
 pub fn content_column(ui: &mut egui::Ui, width: f32, add: impl FnOnce(&mut egui::Ui)) {
-    ui.allocate_ui_with_layout(
-        egui::vec2(width, 0.0),
-        egui::Layout::top_down(egui::Align::Min),
-        |ui| {
-            ui.set_max_width(width);
-            // Жёсткая отсечка по колонке: даже если какой-то виджет посчитает себя шире
-            // положенного, он не нарисуется поверх соседней панели и за краем окна.
-            let clip = ui.clip_rect();
-            let left = ui.max_rect().left();
-            ui.set_clip_rect(egui::Rect::from_min_max(
-                egui::pos2(left, clip.top()),
-                egui::pos2((left + width).min(clip.right()), clip.bottom()),
-            ));
-            add(ui);
-        },
-    );
+    let pad = column_pad(ui);
+    ui.horizontal_top(|ui| {
+        if pad > 0.0 {
+            ui.add_space(pad);
+        }
+        ui.allocate_ui_with_layout(
+            egui::vec2(width, 0.0),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ui.set_max_width(width);
+                // Жёсткая отсечка по колонке: даже если какой-то виджет посчитает себя шире
+                // положенного, он не нарисуется поверх соседней панели и за краем окна.
+                let clip = ui.clip_rect();
+                let left = ui.max_rect().left();
+                ui.set_clip_rect(egui::Rect::from_min_max(
+                    egui::pos2(left, clip.top()),
+                    egui::pos2((left + width).min(clip.right()), clip.bottom()),
+                ));
+                add(ui);
+            },
+        );
+    });
 }
