@@ -13,7 +13,10 @@ use std::process::Command;
 
 fn main() {
     println!("cargo:rerun-if-changed=assets/tvoice.ico");
+    println!("cargo:rerun-if-changed=assets/rec.mp3");
     println!("cargo:rerun-if-changed=build.rs");
+
+    copy_runtime_assets();
 
     if !cfg!(windows) {
         return;
@@ -52,6 +55,45 @@ fn main() {
         Ok(s) => println!("cargo:warning=windres завершился с кодом {s} — значок не встроен"),
         Err(e) => println!("cargo:warning=не запустить {windres}: {e} — значок не встроен"),
     }
+}
+
+/// Положить рядом с .exe файлы, которые программа читает во время работы.
+///
+/// Сигналы диктовки ищутся рядом с исполняемым файлом (`models::app_dir`), поэтому в
+/// репозитории они лежат в `assets`, а сюда копируются при сборке. Без этого после
+/// `cargo clean` или на свежей машине звуки молча исчезали бы: сама папка `target`
+/// в репозиторий не входит.
+fn copy_runtime_assets() {
+    let Ok(out) = std::env::var("OUT_DIR") else {
+        return;
+    };
+    // OUT_DIR — это target/<profile>/build/<crate>-<hash>/out; нужен target/<profile>.
+    let Some(target_dir) = Path::new(&out).ancestors().nth(3) else {
+        return;
+    };
+    for name in ["rec.mp3"] {
+        let from = Path::new("assets").join(name);
+        if !from.is_file() {
+            println!("cargo:warning=нет {} — сигнал не будет играть", from.display());
+            continue;
+        }
+        let to = target_dir.join(name);
+        // Не перезаписываем файл, который пользователь заменил своим: сравниваем время.
+        let newer = |a: &Path, b: &Path| match (modified(a), modified(b)) {
+            (Some(x), Some(y)) => x > y,
+            _ => true,
+        };
+        if to.exists() && !newer(&from, &to) {
+            continue;
+        }
+        if let Err(e) = std::fs::copy(&from, &to) {
+            println!("cargo:warning=не скопировать {}: {e}", from.display());
+        }
+    }
+}
+
+fn modified(p: &Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(p).and_then(|m| m.modified()).ok()
 }
 
 /// Путь к `windres`: сначала рядом с линкером проекта, потом просто из PATH.

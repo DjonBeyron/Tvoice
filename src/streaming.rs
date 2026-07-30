@@ -52,6 +52,12 @@ const TAIL_WORDS: usize = 4;
 const WORD_SHIFT: usize = 3;
 /// Где искать межсловную паузу, когда фраза упёрлась в лимит длины.
 const GAP_SEARCH: Duration = Duration::from_millis(1500);
+/// Сколько молчания заканчивает саму диктовку.
+///
+/// Хоткей легко зажать и забыть (а кнопкой мыши — тем более), и тогда микрофон остаётся
+/// открытым, индикатор висит, а whisper молотит тишину. По истечении этого времени поток
+/// заканчивает работу сам и просит приложение погасить захват.
+const IDLE_LIMIT: Duration = Duration::from_secs(10);
 /// Сколько тишины оставляем в буфере на случай, что речь уже началась.
 ///
 /// Обрезали вплотную — и мягкое начало фразы уезжало вместе с тишиной: VAD признаёт речь
@@ -87,9 +93,12 @@ pub fn run(
         let mut drained = false;
         let mut next_draft = Instant::now();
         let mut next_report = Instant::now();
+        // Не пора ли закончить самим (см. IDLE_LIMIT).
+        let mut idle_stop = false;
 
         loop {
-            let stopping = stop.load(Ordering::Relaxed);
+            let asked = stop.load(Ordering::Relaxed);
+            let stopping = asked || idle_stop;
             if stopping && !drained {
                 drained = true;
                 thread::sleep(DRAIN); // хвост записи ещё в пути
@@ -122,10 +131,23 @@ pub fn run(
             let voiced = secs(seg.speech);
             let phrase = secs(seg.analysed);
 
+            // Молчание меряем по энергии записи, а не по разметке речь/тишина и не по
+            // часам: разметка «звенит» и может защёлкнуться (тогда автовыход не сработал бы
+            // вовсе), а часы не знают, был ли звук. См. `Vad::quiet_tail`.
+            let quiet = secs(vad.quiet_tail());
+            if !stopping && quiet >= IDLE_LIMIT {
+                crate::logln!(
+                    "stream: молчание {:.1}с — заканчиваю диктовку сам",
+                    quiet.as_secs_f32()
+                );
+                idle_stop = true;
+                continue; // следующий круг уже пойдёт как «стоп»: зафиксирует хвост и выйдет
+            }
+
             if Instant::now() >= next_report {
                 next_report = Instant::now() + REPORT_EVERY;
                 crate::logln!(
-                    "vad: rms={:.4} шум={:.4}±{:.4} порог={:.4} | фраза {:.1}с: речь {:.1}с, до {:.1}с, тишина {:.1}с",
+                    "vad: rms={:.4} шум={:.4}±{:.4} порог={:.4} | фраза {:.1}с: речь {:.1}с, до {:.1}с, тишина {:.1}с, молчит {:.1}с",
                     vad.last_rms(),
                     vad.noise(),
                     vad.dev(),
@@ -133,7 +155,8 @@ pub fn run(
                     phrase.as_secs_f32(),
                     voiced.as_secs_f32(),
                     speech.as_secs_f32(),
-                    silence.as_secs_f32()
+                    silence.as_secs_f32(),
+                    quiet.as_secs_f32()
                 );
             }
 
@@ -246,7 +269,14 @@ pub fn run(
         crate::logln!("stream: завершено, фраз: {phrases}, уточнений: {drafts}");
         if let Ok(mut s) = status.lock() {
             s.busy = false;
-            s.state = "Готово ✓".into();
+            s.state = if idle_stop {
+                format!("Тишина {}с — захват остановлен", IDLE_LIMIT.as_secs())
+            } else {
+                "Готово ✓".into()
+            };
+            // Останов по тишине приложение должно довести до конца: погасить микрофон,
+            // снять состояние «диктую» и убрать индикатор — про это знает только оно.
+            s.auto_stop = idle_stop;
         }
         ctx.request_repaint();
         let _ = std::fs::remove_file(&wav);

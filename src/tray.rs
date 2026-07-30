@@ -30,6 +30,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 /// Сообщение от значка в наше окно.
 const WM_TRAY: u32 = WM_APP + 1;
+/// «Покажи окно» — присылает вторая копия программы перед тем, как выйти (см. `single`).
+pub const WM_SHOW_REQUEST: u32 = WM_APP + 2;
+/// Класс скрытого окна трея. По нему вторая копия и находит уже запущенную.
+pub const CLASS: PCWSTR = windows::core::w!("TvoiceTray");
 
 const ID_SHOW: usize = 1;
 const ID_DICTATE: usize = 2;
@@ -177,7 +181,7 @@ unsafe fn run(tip: &str, slot: Arc<Mutex<isize>>) {
     let Ok(hinst) = GetModuleHandleW(None) else {
         return;
     };
-    let class = windows::core::w!("TvoiceTray");
+    let class = CLASS;
     let wc = WNDCLASSW {
         lpfnWndProc: Some(wndproc),
         hInstance: hinst.into(),
@@ -235,6 +239,12 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                     _ => {}
                 }
                 LRESULT(0)
+            }
+            // Вторая копия попросила показать окно и вышла — ведём себя как по «Show».
+            WM_SHOW_REQUEST => {
+                crate::logln!("tray: запрос от второй копии — показываю окно");
+                send(TrayEvent::Show);
+                return LRESULT(0);
             }
             WM_COMMAND => {
                 match (wp.0 & 0xFFFF) as usize {

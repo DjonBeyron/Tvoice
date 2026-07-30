@@ -1,0 +1,23 @@
+# Образец локальных настроек cargo. Скопируйте в `.cargo/config.toml` (он не попадает в
+# репозиторий) ЛИБО в `%CARGO_HOME%\config.toml`, если хотите один раз на всю машину.
+#
+# Нужен, только если собираете GNU-таргет и mingw-w64 не лежит в PATH. Обычно достаточно
+# добавить `<mingw>\bin` в PATH и этот файл не создавать вовсе.
+#
+# Зачем вообще: linker mingw (`ld.exe`) не умеет линковать, когда в путях тулчейна есть
+# пробелы. Если профиль пользователя содержит пробелы или не-ASCII символы, вынесите
+# RUSTUP_HOME и CARGO_HOME в короткий ASCII-путь, например:
+#   RUSTUP_HOME=C:\rust\.rustup
+#   CARGO_HOME=C:\rust\.cargo
+
+[target.x86_64-pc-windows-gnu]
+linker = "C:\\mingw64\\bin\\x86_64-w64-mingw32-gcc.exe"
+ar = "C:\\mingw64\\bin\\ar.exe"
+# dlltool нужен для import-библиотек WinAPI на GNU-таргете.
+rustflags = ["-Cdlltool=C:\\mingw64\\bin\\dlltool.exe"]
+
+# Компилятор C для build-скриптов зависимостей (`ring` в TLS у ureq).
+[env]
+CC_x86_64_pc_windows_gnu = "C:\\mingw64\\bin\\gcc.exe"
+CXX_x86_64_pc_windows_gnu = "C:\\mingw64\\bin\\g++.exe"
+AR_x86_64_pc_windows_gnu = "C:\\mingw64\\bin\\ar.exe"

@@ -43,6 +43,61 @@ pub fn dispatch(args: &[String]) -> bool {
             vad_test(secs);
             return true;
         }
+        // Автовыход по тишине: `--idle-test`. Кормим поток распознавания тишиной и смотрим,
+        // через сколько он закончит сам. Ни микрофон, ни модель не нужны: на тишине
+        // распознавание не вызывается ни разу, а проверяем мы именно правило по времени.
+        if let Some(i) = args.iter().position(|a| a == "--idle-test") {
+            idle_test(args.get(i + 1).filter(|s| !s.starts_with('-')).cloned());
+            return true;
+        }
+
+        // Сигнал старта диктовки: `--sound-test [раз]`. Печатает, за сколько возвращается
+        // `play` — то есть насколько нажатие хоткея задержалось бы, если играть в его потоке.
+        if let Some(i) = args.iter().position(|a| a == "--sound-test") {
+            let times: usize = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(3);
+            println!("== сигнал старта: {times} раз ==");
+            let t0 = std::time::Instant::now();
+            crate::sound::prewarm();
+            println!("подготовка: {:.0} мс", t0.elapsed().as_secs_f32() * 1000.0);
+            // Играем парами «вход → выход»: слышно, что обратный сигнал действительно
+            // обратный, и видно, что оба вызова не блокируют вызывающего.
+            for n in 1..=times {
+                for name in ["вход", "выход"] {
+                    let t = std::time::Instant::now();
+                    if name == "вход" {
+                        crate::sound::set_active(false);
+                        crate::sound::play_enter();
+                    } else {
+                        crate::sound::play_exit();
+                    }
+                    println!(
+                        "  #{n} {name}: вызов {:.2} мс",
+                        t.elapsed().as_secs_f32() * 1000.0
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(800));
+                }
+            }
+            return true;
+        }
+
+        // Автозапуск: `--autostart status|on|off`. Тем же кодом, что и галочка в настройках.
+        if let Some(i) = args.iter().position(|a| a == "--autostart") {
+            match args.get(i + 1).map(String::as_str) {
+                Some("on") | Some("off") => {
+                    let on = args[i + 1] == "on";
+                    match crate::autostart::set(on) {
+                        Ok(()) => println!("автозапуск: {}", if on { "включён" } else { "выключен" }),
+                        Err(e) => println!("не изменить автозапуск: {e}"),
+                    }
+                }
+                _ => println!(
+                    "автозапуск: {}",
+                    if crate::autostart::is_enabled() { "включён" } else { "выключен" }
+                ),
+            }
+            return true;
+        }
+
         // Разбор VAD по готовому файлу: `--vad-file <wav>`.
         //
         // В отличие от `--vad-test`, микрофон не трогает: прогон повторяем, поэтому им можно
@@ -184,6 +239,100 @@ fn selftest_stt() {
 
 /// Диагностика микрофона и VAD: пишем `secs` секунд и раскладываем запись по полочкам —
 /// частота, уровень фона, порог, найденные участки речи. Всё уходит в tvoice.log.
+/// Проверить, что поток распознавания заканчивает сам после долгого молчания.
+fn idle_test(wav: Option<String>) {
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    // Без файла — чистая тишина (проверяем само правило). С файлом — реальная запись:
+    // так видно, что счётчик молчания начинает идти именно после конца речи, а не
+    // застревает из-за разметки VAD.
+    let (source, rate) = match &wav {
+        Some(path) => match audio::read_wav_mono(std::path::Path::new(path)) {
+            Ok((s, r)) => {
+                println!("== автовыход: подаю {path} ==");
+                (s, r.max(1))
+            }
+            Err(e) => {
+                println!("не прочитать {path}: {e}");
+                return;
+            }
+        },
+        None => {
+            println!("== автовыход: кормлю поток тишиной ==");
+            (Vec::new(), 16_000)
+        }
+    };
+    let feed_rate = rate;
+    let live = mic::LiveCapture {
+        buf: Arc::new(Mutex::new(Vec::new())),
+        rate: Arc::new(AtomicU32::new(feed_rate)),
+    };
+    let stop = Arc::new(AtomicBool::new(false));
+    let status = crate::dictation::new_shared();
+
+    // Буфер наполняем в реальном времени: поток отсчитывает молчание по часам, поэтому
+    // «прокрутить» тест быстрее нельзя — приходится ждать честно.
+    let feeder = {
+        let (live, stop) = (live.clone(), stop.clone());
+        std::thread::spawn(move || {
+            let chunk = feed_rate as usize / 20; // 50мс
+            let mut at = 0usize;
+            while !stop.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(50));
+                if let Ok(mut b) = live.buf.lock() {
+                    // Кончился файл (или его и не было) — дальше тишина.
+                    let end = (at + chunk).min(source.len());
+                    if at < end {
+                        b.extend_from_slice(&source[at..end]);
+                        at = end;
+                    } else {
+                        b.extend(std::iter::repeat(0.0).take(chunk));
+                    }
+                }
+            }
+        })
+    };
+
+    let t0 = Instant::now();
+    crate::streaming::run(
+        live,
+        stop.clone(),
+        "модель-не-нужна".into(),
+        "ru".into(),
+        false,
+        status.clone(),
+        egui::Context::default(),
+    );
+
+    let mut fired = None;
+    while t0.elapsed() < Duration::from_secs(45) {
+        std::thread::sleep(Duration::from_millis(100));
+        if status.lock().map(|s| s.auto_stop).unwrap_or(false) {
+            fired = Some(t0.elapsed());
+            break;
+        }
+    }
+    stop.store(true, Ordering::Relaxed);
+    let _ = feeder.join();
+
+    match fired {
+        Some(d) => println!(
+            "остановился сам через {:.1} с (ожидалось ~{} с {})",
+            d.as_secs_f32(),
+            10,
+            if wav.is_some() { "после конца речи" } else { "с начала" }
+        ),
+        None => println!("НЕ остановился за 45 с — автовыход не работает"),
+    }
+    let (state, busy) = status
+        .lock()
+        .map(|s| (s.state.clone(), s.busy))
+        .unwrap_or_default();
+    println!("состояние: {state:?}, busy={busy}");
+}
+
 /// Прогнать VAD по файлу и напечатать разметку — воспроизводимая проверка порога.
 fn vad_file(path: &str) {
     let (mono, rate) = match audio::read_wav_mono(std::path::Path::new(path)) {

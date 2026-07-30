@@ -41,7 +41,18 @@ const FLOOR_PCT: f32 = 0.05;
 /// диктовка молчала целыми сеансами.
 const ON_FACTOR: f32 = 2.0;
 /// …и чтобы продолжаться (гистерезис).
-const OFF_FACTOR: f32 = 1.4;
+///
+/// Замер на живом микрофоне: в тишине энергия кадров гуляет в 1.1–1.6 раза от фона.
+/// При 1.4 порог попадал внутрь этого разброса, речь не кончалась никогда, вся запись
+/// становилась одной фразой, и автовыход по молчанию не срабатывал вовсе.
+const OFF_FACTOR: f32 = 1.8;
+/// По сколько кадров сглаживаем энергию перед решением.
+///
+/// Решать по одному кадру 20мс нельзя: одиночный щелчок в фоне поднимал энергию выше
+/// порога удержания, «звон» HANG продлевался на 300мс, и одного такого щелчка на каждые
+/// 15 кадров хватало, чтобы речь не заканчивалась. Берём медиану, а не среднее: она
+/// отбрасывает выброс целиком, а не размазывает его по окну.
+const SMOOTH: usize = 5;
 /// Абсолютные нижние границы порогов — на случай идеально тихого входа.
 const MIN_ON: f32 = 0.008;
 const MIN_OFF: f32 = 0.005;
@@ -55,7 +66,9 @@ const HANG: usize = 15;
 pub struct Vad {
     frame: usize,
     processed: usize,
-    /// Кольцо энергий последних кадров — по нему оценивается фон.
+    /// Последние несколько кадров — из них берём медиану для решения.
+    recent: std::collections::VecDeque<f32>,
+    /// Кольцо сглаженных энергий — по нему оценивается фон.
     window: std::collections::VecDeque<f32>,
     /// Сколько кадров помещается в окно.
     capacity: usize,
@@ -78,6 +91,7 @@ impl Vad {
         Self {
             frame: (rate * FRAME_MS / 1000).max(1),
             processed: 0,
+            recent: std::collections::VecDeque::new(),
             window: std::collections::VecDeque::new(),
             capacity: (WINDOW_MS / FRAME_MS).max(1),
             floor: 0.0,
@@ -100,12 +114,19 @@ impl Vad {
             let rms = (f.iter().map(|v| v * v).sum::<f32>() / f.len() as f32).sqrt();
             self.last_rms = rms;
 
+            // Решаем по сглаженной энергии, а не по одному кадру: см. SMOOTH.
+            if self.recent.len() == SMOOTH {
+                self.recent.pop_front();
+            }
+            self.recent.push_back(rms);
+            let level = median(self.recent.iter().copied());
+
             // Окно пополняем безусловно: оценка фона не должна зависеть от того, что мы
             // сами же решили про эти кадры, — именно эта обратная связь и защёлкивала VAD.
             if self.window.len() == self.capacity {
                 self.window.pop_front();
             }
-            self.window.push_back(rms);
+            self.window.push_back(level);
             self.since_recalc += 1;
             if self.since_recalc >= RECALC_EVERY || self.floor == 0.0 {
                 self.since_recalc = 0;
@@ -115,14 +136,14 @@ impl Vad {
             let on = self.on();
             let off = (self.floor * OFF_FACTOR).max(MIN_OFF);
             if self.in_speech {
-                if rms >= off {
+                if level >= off {
                     self.hang = HANG;
                 } else if self.hang > 0 {
                     self.hang -= 1;
                 } else {
                     self.in_speech = false;
                 }
-            } else if rms >= on {
+            } else if level >= on {
                 self.rise += 1;
                 if self.rise >= RISE {
                     self.in_speech = true;
@@ -132,8 +153,19 @@ impl Vad {
                 self.rise = 0;
             }
             self.flags.push(self.in_speech);
-            self.energy.push(rms);
+            self.energy.push(level);
         }
+    }
+
+    /// Сколько времени в конце записи звук не поднимался до порога начала речи.
+    ///
+    /// Считаем по энергии, а не по разметке речь/тишина: разметка «звенит» и может
+    /// защёлкнуться, а решение «человек молчит уже давно» должно опираться на сам звук —
+    /// иначе одна ошибка разметки отменяет автовыход на весь сеанс. Порог берём тот же,
+    /// с которого речь начинается: ниже него говорить никто не начал.
+    pub fn quiet_tail(&self) -> usize {
+        let on = self.on();
+        self.energy.iter().rev().take_while(|&&e| e < on).count() * self.frame
     }
 
     /// Пересчитать оценку фона: низкий процентиль окна.
@@ -228,6 +260,25 @@ impl Vad {
             .map(|(i, _)| base + i)?;
         Some(quietest * self.frame)
     }
+}
+
+/// Медиана короткой последовательности (до [`SMOOTH`] элементов).
+fn median(values: impl Iterator<Item = f32>) -> f32 {
+    let mut buf = [0f32; SMOOTH];
+    let mut n = 0;
+    for v in values {
+        if n == SMOOTH {
+            break;
+        }
+        buf[n] = v;
+        n += 1;
+    }
+    if n == 0 {
+        return 0.0;
+    }
+    let slice = &mut buf[..n];
+    slice.sort_by(f32::total_cmp);
+    slice[n / 2]
 }
 
 /// Результат разбора участка (всё в сэмплах, относительно начала участка).

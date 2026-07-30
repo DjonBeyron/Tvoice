@@ -154,6 +154,7 @@ impl TvoiceApp {
                 s.error = None;
                 s.state = "Слушаю… (говорите)".into();
                 s.last_text.clear();
+                s.auto_stop = false; // от прошлого сеанса флаг остаться не должен
             }
         } else {
             // Батч: пишем во временный WAV, распознаём по отпусканию.
@@ -180,6 +181,9 @@ impl TvoiceApp {
             return;
         }
         self.dictating = false;
+        // Единственная воронка выхода из захвата: сюда приходят и повторное нажатие, и
+        // отпускание в батч-режиме, и меню трея, и остановка по молчанию.
+        crate::sound::play_exit();
         if let Some(stop) = self.stream_stop.take() {
             crate::logln!("стоп потоковой диктовки");
             stop.store(true, Ordering::Relaxed); // поток сам зафиксирует хвост

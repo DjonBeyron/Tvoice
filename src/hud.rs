@@ -79,14 +79,16 @@ impl Canvas {
         })
     }
 
-    fn pixels(&self) -> &mut [u32] {
-        unsafe { std::slice::from_raw_parts_mut(self.bits, (self.w * self.h) as usize) }
-    }
-
     /// Отрисовать кадр: подложка-пилюля и три точки, дышащие под уровень звука.
     pub fn draw(&self, t: f32, level: f32) {
         let (w, h, s) = (self.w, self.h, self.scale);
-        draw_frame(self.pixels(), w, h, s, t, level);
+        // Изменяемый срез строим здесь, а не отдаём из отдельного метода. Функция вида
+        // `fn pixels(&self) -> &mut [u32]` разрешала получить два независимых изменяемых
+        // среза на один буфер из двух `&self` — с точки зрения компилятора это алиасинг,
+        // и clippy запрещает такое по умолчанию (`mut_from_ref`). Буфер DIB наш, рисуем
+        // из одного потока, поэтому достаточно не выпускать `&mut` за пределы вызова.
+        let pixels = unsafe { std::slice::from_raw_parts_mut(self.bits, (w * h) as usize) };
+        draw_frame(pixels, w, h, s, t, level);
     }
 
     /// Отдать буфер окну с попиксельной прозрачностью.

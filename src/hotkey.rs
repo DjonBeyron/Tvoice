@@ -123,6 +123,12 @@ impl Hotkey {
                         let down = config_t.lock().map(|c| c.is_down()).unwrap_or(false);
                         if down != was_down {
                             let ev = if down {
+                                // Сигнал входа — прежде всего остального: пользователь
+                                // должен услышать нажатие сразу, а не после подъёма
+                                // захвата. Вызов не блокирующий, играет отдельный поток.
+                                // Выход озвучивает `stop_dictation` — единственное место,
+                                // через которое проходят все способы остановки.
+                                crate::sound::play_enter();
                                 HotkeyEvent::Pressed
                             } else {
                                 HotkeyEvent::Released

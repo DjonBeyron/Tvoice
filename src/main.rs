@@ -10,6 +10,7 @@ mod log;
 
 mod app;
 mod audio;
+mod autostart;
 mod bench;
 mod caret;
 mod cli;
@@ -21,9 +22,12 @@ mod hud;
 mod inject;
 mod mic;
 mod models;
+mod mp3;
 mod overlay;
 mod selftest;
 mod server;
+mod single;
+mod sound;
 mod streaming;
 mod theme;
 mod transcribe;
@@ -50,10 +54,29 @@ fn main() -> eframe::Result<()> {
 
     logln!("=== TVOICE v{} запуск GUI ===", env!("CARGO_PKG_VERSION"));
 
+    // Второй копии быть не должно: это второй хоткей, второй whisper-server в памяти и
+    // две программы, печатающие в одно поле. Проверяем ПОСЛЕ cli::dispatch — режимы
+    // диагностики должны работать и при запущенной программе.
+    if !single::claim() {
+        return Ok(());
+    }
+
     // Компактное окно: приложение фоновое, живёт в трее и работает по хоткею.
     // «Свёрнуто в трей» = окно за экраном, а не спрятанное: спрятанное окно
     // останавливает цикл eframe, и хоткей с меню трея перестают отвечать.
-    let hidden = config::load().start_in_tray;
+    // Открываем файл сигнала заранее: иначе открытие легло бы на первое нажатие хоткея.
+    sound::prewarm();
+
+    // `--tray` ставит автозапуск (см. `autostart`): при старте системы окно не должно
+    // выпрыгивать на экран, независимо от настройки для ручного запуска.
+    let by_flag = args.iter().any(|a| a == "--tray");
+    let hidden = config::load().start_in_tray || by_flag;
+    if hidden {
+        logln!(
+            "запуск свёрнутым в трей ({})",
+            if by_flag { "флаг --tray, автозапуск" } else { "настройка" }
+        );
+    }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("TVOICE")
@@ -77,9 +100,9 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "TVOICE",
         options,
-        Box::new(|cc| {
+        Box::new(move |cc| {
             theme::apply(&cc.egui_ctx);
-            Ok(Box::new(TvoiceApp::new(cc.egui_ctx.clone())))
+            Ok(Box::new(TvoiceApp::new(cc.egui_ctx.clone(), hidden)))
         }),
     )
 }

@@ -1,0 +1,43 @@
+# Проверка сборки на каждый push и pull request.
+#
+# Собираем ТЕМ ЖЕ тулчейном, что и локально, — GNU, а не MSVC по умолчанию. Иначе
+# проверка шла бы по одному коду, а релиз — по другому, и расхождения вылезали бы только
+# у пользователей.
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # GNU-таргету нужен gcc как драйвер компоновки, а build.rs берёт windres для
+      # встраивания значка в .exe. И то, и другое приходит с mingw-w64.
+      - name: mingw-w64
+        run: choco install mingw --no-progress -y
+
+      # Канал закреплён в rust-toolchain.toml, поэтому `rustup default` не нужен: он всё
+      # равно был бы перекрыт файлом. Ставим тот же тулчейн явно и добавляем clippy.
+      - name: Тулчейн Rust (GNU)
+        run: rustup toolchain install stable-x86_64-pc-windows-gnu --profile minimal --component clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Проверить, что windres нашёлся
+        run: windres --version
+
+      - name: Сборка
+        run: cargo build --release --locked
+
+      # Без `-D warnings`: замечания стиля показываем, но сборку из-за них не валим.
+      # Гейта по `cargo fmt` здесь намеренно нет — код форматирован вручную.
+      - name: Clippy
+        run: cargo clippy --release --all-targets

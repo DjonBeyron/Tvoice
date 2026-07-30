@@ -192,6 +192,18 @@ impl TvoiceApp {
             ) {
                 self.dirty = true;
             }
+            if k::switch_row(
+                ui,
+                &mut self.autostart,
+                "Запускать при старте Windows",
+                "Свёрнутым в трей, независимо от настройки выше",
+            ) {
+                // Настройка живёт в реестре, а не в config.json, поэтому применяем сразу.
+                if let Err(e) = crate::autostart::set(self.autostart) {
+                    crate::logln!("автозапуск: не изменить — {e}");
+                    self.autostart = !self.autostart; // галочка не должна врать
+                }
+            }
         });
     }
 

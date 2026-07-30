@@ -1,6 +1,6 @@
 [package]
 name = "tvoice"
-version = "1.19.1"
+version = "1.21.1"
 edition = "2021"
 description = "TVOICE — локальная голосовая диктовка на Windows 11 (микрофон + офлайн-транскрибация Whisper)"
 
@@ -50,6 +50,10 @@ features = [
     "Win32_System_LibraryLoader",
     # --- Значок в области уведомлений (трей) ---
     "Win32_UI_Shell",
+    # --- Короткий сигнал при старте диктовки (MCI из winmm: mp3 без своего декодера) ---
+    "Win32_Media_Multimedia",
+    # --- Декодирование mp3 в PCM, чтобы развернуть сигнал для выхода из захвата ---
+    "Win32_Media_MediaFoundation",
     # --- Поиск курсора ввода в чужих окнах (UI Automation + SAFEARRAY) ---
     "Win32_UI_Accessibility",
     "Win32_System_Ole",

@@ -6,3 +6,10 @@
 /bin
 config.json
 *.log
+
+# Локальные настройки cargo: машинные пути к тулчейну не место в репозитории.
+# Образец — .cargo/config.toml.example
+/.cargo/config.toml
+
+# Результат сборки установщика.
+/dist

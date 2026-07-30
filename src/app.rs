@@ -89,6 +89,9 @@ pub struct TvoiceApp {
     pub(crate) first_frame: bool,
     /// Прятать окно в трей при запуске.
     pub(crate) start_in_tray: bool,
+    /// Запускаться вместе с Windows. В `config.json` не хранится — истина в реестре,
+    /// см. `autostart`.
+    pub(crate) autostart: bool,
     /// Где показывать индикатор диктовки.
     pub(crate) hud_anchor: crate::overlay::Anchor,
     /// Размер индикатора: 1.0 — базовый.
@@ -104,7 +107,10 @@ pub struct TvoiceApp {
 }
 
 impl TvoiceApp {
-    pub fn new(ctx: egui::Context) -> Self {
+    /// `hidden` — прятать ли окно сразу: это решает `main` (настройка либо флаг `--tray`
+    /// от автозапуска), и состояние приложения обязано с ним совпадать, иначе окно уедет
+    /// за экран, а приложение будет считать его видимым.
+    pub fn new(ctx: egui::Context, hidden: bool) -> Self {
         let ctx_for_tray = ctx.clone();
         let engine = MicEngine::spawn(ctx.clone());
         engine.send(MicCommand::RefreshPermission);
@@ -171,12 +177,13 @@ impl TvoiceApp {
                 &format!("TVOICE — диктовка: {}", cfg.hotkey().label()),
                 ctx_for_tray,
             ),
-            hidden: cfg.start_in_tray,
+            hidden,
             quitting: false,
             last_frame: std::time::Instant::now(),
             window_pos: egui::pos2(200.0, 120.0),
             first_frame: true,
             start_in_tray: cfg.start_in_tray,
+            autostart: crate::autostart::is_enabled(),
             hud_anchor: crate::overlay::Anchor::from_id(&cfg.hud_anchor),
             hud_scale: cfg.hud_scale,
             hud_texture: None,
@@ -316,11 +323,31 @@ impl eframe::App for TvoiceApp {
             self.voice * 0.6 + voice * 0.4
         };
 
+        // Поток распознавания мог закончить сам (долгое молчание) — тогда захват, состояние
+        // «диктую» и индикатор снимаем здесь: поток до них не достаёт.
+        if self.dictating {
+            let idle = self
+                .dictation
+                .lock()
+                .map(|s| s.auto_stop)
+                .unwrap_or(false);
+            if idle {
+                crate::logln!("диктовка остановлена по тишине");
+                if let Ok(mut s) = self.dictation.lock() {
+                    s.auto_stop = false;
+                }
+                self.stop_dictation(); // обратный сигнал сыграет он сам
+            }
+        }
+
         self.shell(ctx);
 
         // Индикатор у курсора во время диктовки (нативное окно в своём потоке).
         self.overlay.set_level(self.level);
         self.overlay.set_visible(self.dictating);
+        // Отсюда же `sound` узнаёт, входит нажатие хоткея в захват или выходит из него.
+        // Одно место на оба признака: новый путь остановки нельзя забыть учесть.
+        crate::sound::set_active(self.dictating);
 
         // Сохраняем настройки, если менялись, и прогреваем сервер под новую модель/язык.
         if self.dirty {

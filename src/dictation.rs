@@ -13,6 +13,12 @@ pub struct DictationStatus {
     pub state: String,
     pub last_text: String,
     pub error: Option<String>,
+    /// Поток распознавания сам решил закончить (долгое молчание) — приложению нужно
+    /// довести остановку до конца: погасить захват и убрать индикатор.
+    ///
+    /// Через статус, а не через флаг `stop`: тот лишь просит поток выйти, а про захват
+    /// микрофона, состояние `dictating` и индикатор знает только приложение.
+    pub auto_stop: bool,
 }
 
 pub type SharedDictation = Arc<Mutex<DictationStatus>>;

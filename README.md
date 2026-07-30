@@ -1,165 +1,196 @@
+<div align="center">
+
+<img src="assets/tvoice.ico" width="88" alt="TVOICE">
+
 # TVOICE
 
-**Версия 1.17.0**
+**Offline voice dictation for Windows 11.**
+Press a key, speak, and the text lands in whatever window you were typing in.
+Nothing leaves your machine.
 
-Тёмное приложение на Rust для Windows 11: надёжный доступ к микрофону + **локальная
-офлайн-диктовка** (распознавание речи Whisper) с вставкой текста в позицию курсора.
+[![Latest release](https://img.shields.io/github/v/release/DjonBeyron/Tvoice?label=version&color=7c5cff)](https://github.com/DjonBeyron/Tvoice/releases/latest)
+[![Download for Windows](https://img.shields.io/badge/download-Windows%20installer-2ea043?logo=windows&logoColor=white)](https://github.com/DjonBeyron/Tvoice/releases/latest)
+[![CI](https://github.com/DjonBeyron/Tvoice/actions/workflows/ci.yml/badge.svg)](https://github.com/DjonBeyron/Tvoice/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-## Правила разработки (важно)
+**[Русская версия](README.ru.md)**
 
-### Версионирование — `MAJOR.MINOR.PATCH` (сейчас `1.7.6`)
+<img src="docs/screenshot.png" width="620" alt="TVOICE main screen">
 
-Версия хранится в [`Cargo.toml`](Cargo.toml) (поле `version`) и правится вручную при каждом изменении:
+</div>
 
-- **PATCH** (последняя цифра) — `+1`, когда что-то **перерабатывается/чинится/рефакторится**
-  без новых возможностей. Пример: `1.0.0 → 1.0.1`.
-- **MINOR** (средняя цифра) — `+1`, когда **добавляют мини-функцию**; PATCH сбрасывается в `0`.
-  Пример: `1.0.1 → 1.1.0`.
-- **MAJOR** (первая цифра) — `+1` при крупной переработке/несовместимых изменениях; MINOR и PATCH
-  сбрасываются в `0`. Пример: `1.4.2 → 2.0.0`.
+---
 
-### Размер файлов — держим небольшими
+## Download
 
-- Перед завершением задачи **проверять размер исходников**: `wc -l src/*.rs src/mic/*.rs`.
-- Ориентир: один `.rs`-файл — **до ~400 строк**. Если файл разрастается — **разбивать на модули**
-  (по смыслу: отдельный тип/этап/экран). Огромные файлы (500+ строк) не оставлять.
-- То же для любых генерируемых артефактов (логи, записи): не допускать разрастания — записи
-  голоса складываются в `recordings/` и не коммитятся (см. `.gitignore`).
+### **[⬇ Latest installer for Windows](https://github.com/DjonBeyron/Tvoice/releases/latest)**
 
-## Два файла `Cargo.*` — что это и как запускать
+The version badge above always shows what is currently published. Take
+`TVOICE-<version>-setup.exe` from the release page and run it — **no administrator rights
+needed**, it installs into your user profile.
 
-- [`Cargo.toml`](Cargo.toml) — манифест проекта (имя, версия, зависимости). **Редактируется руками.**
-- `Cargo.lock` — зафиксированные версии зависимостей. **Генерируется автоматически**, руками не правится.
+> Recognition needs an engine and a language model, which are **not bundled** (hundreds of
+> megabytes). The app downloads them for you — see [First run](#first-run).
 
-Эти файлы **не запускаются** двойным кликом (поэтому Windows и спрашивает «чем открыть»).
-Проект запускается из терминала в папке проекта — `cargo` сам читает `Cargo.toml`/`Cargo.lock`:
+## What it does
 
-```powershell
-cargo run   # собрать и запустить
+- **Streaming dictation.** Words show up while you are still talking and get corrected in
+  place, instead of appearing after the phrase is over.
+- **Fully offline.** Recognition runs locally through
+  [whisper.cpp](https://github.com/ggerganov/whisper.cpp). No audio and no text leaves the
+  machine, no account, no API key.
+- **Types into any window.** Text goes wherever the caret is — editor, browser, messenger,
+  terminal.
+- **Any hotkey, mouse buttons included.** A middle mouse button works as well as a key
+  combination.
+- **Lives in the tray**, and can start with Windows, minimised.
+- **Stops by itself** after ten seconds of silence.
+
+## Requirements
+
+| | |
+|---|---|
+| OS | Windows 10 1809+ or Windows 11, 64-bit |
+| Microphone | any input device; permission is requested on first run |
+| Disk | ~10 MB for the app, plus ~700 MB for the engine and 75 MB – 1.5 GB for the model |
+| GPU | optional — whisper.cpp uses CUDA when an NVIDIA card is present, CPU otherwise |
+
+The app uses Media Foundation, present in every regular Windows edition. On `N`/`KN`
+editions install the Media Feature Pack first.
+
+## Installation
+
+1. Download `TVOICE-<version>-setup.exe` from the
+   [latest release](https://github.com/DjonBeyron/Tvoice/releases/latest).
+2. Run it. The installer offers a Start Menu shortcut, an optional desktop shortcut and an
+   optional *start with Windows* entry.
+3. It installs into `%LOCALAPPDATA%\Programs\TVOICE`.
+
+That location is deliberate, not laziness: the app keeps its settings, log, engine and
+models next to its own executable, and `Program Files` is not writable for a normal user —
+installing there would break both settings and model downloads.
+
+Uninstall from **Settings → Apps** as usual. Downloaded models are **kept**, so a
+reinstall does not have to fetch gigabytes again; delete the install folder by hand if you
+want them gone too.
+
+## First run
+
+1. Open **Settings → Models**.
+2. Press **Download engine** — fetches a whisper.cpp build, with CUDA support if your
+   machine has an NVIDIA GPU.
+3. Pick a model and download it:
+
+   | Model | Size | Good for |
+   |---|---|---|
+   | `tiny` | 75 MB | quick checks, weak machines |
+   | `base` | 148 MB | short notes |
+   | `small` | 488 MB | balanced |
+   | **`large-v3-turbo`** | 574 MB | **recommended** — near-large quality, still fast |
+   | `medium` | 1.5 GB | maximum quality, slower |
+
+4. Back on the **Dictation** screen, check the hotkey and press **Start dictation**.
+
+## Usage
+
+**Hotkey.** `Ctrl + Alt + Space` by default. Change it in **Settings → Hotkeys**: press
+*Set*, then hold the combination you want. Mouse buttons are accepted.
+
+**Streaming mode** (the default) makes the hotkey a **toggle** — press to start, press
+again to stop. Hold-to-talk is not used here on purpose: the held keys would leak their
+characters into the target window.
+
+**Indicator.** A small pill near the caret pulses with your voice. Position and size are
+configurable.
+
+**Auto-stop.** Ten seconds of silence closes the capture and hides the indicator, so a
+forgotten hotkey does not keep the microphone open.
+
+**Sounds.** `rec.mp3` next to the executable plays when capture starts; the same sound,
+reversed, plays when it stops. Delete the file for silent operation, or replace it with
+your own — the reversed version is rebuilt automatically.
+
+## Diagnostics
+
+The binary doubles as its own test bench. All of these run headless, without the GUI:
+
+```bash
+tvoice --probe                              # microphone permissions and device list
+tvoice --vad-file <file.wav>                # voice-activity detection over a file
+tvoice --idle-test [file.wav]               # verify the 10-second auto-stop
+tvoice --sound-test [n]                     # start/stop cues and their latency
+tvoice --stt-bench <wav> <reference text>   # recognition quality, by the numbers
+tvoice --rewrite-sim <draft> <draft> …      # how much text a refinement rewrites
+tvoice --autostart status|on|off            # the "start with Windows" registry entry
 ```
 
-Открыть `.toml`/`.lock` для просмотра можно любым текстовым редактором (VS Code, Блокнот).
+Everything is logged to `tvoice.log` next to the executable: voice-activity thresholds,
+every recognition draft, every insertion. When dictation misbehaves, that file usually
+says why.
 
-## Стек
+## How it works
 
-- **UI:** [`egui`](https://github.com/emilk/egui) + `eframe` — immediate-mode GUI, GPU-рендер, тёмная тема, один `.exe`.
-- **Доступ к микрофону:** официальные API Microsoft + резервный «хардкорный» путь.
+| Stage | Where | Notes |
+|---|---|---|
+| Microphone | [`src/mic/`](src/mic) | three layers: privacy toggles in the registry, WinRT `MediaCapture` for the consent dialog, and raw WASAPI as a fallback — some drivers reject shared-mode capture with `E_INVALIDARG`, so exclusive mode is attempted next |
+| Speech detection | [`src/vad.rs`](src/vad.rs) | noise floor as a low percentile of a 5-second energy window, computed independently of the speech/silence decision so it cannot latch |
+| Recognition | [`src/server.rs`](src/server.rs) | a resident `whisper-server`: the model is loaded once and stays in memory, requests go over HTTP. Bound to a Job Object so it dies with the app, even on a crash |
+| Dictation loop | [`src/streaming.rs`](src/streaming.rs) | the current phrase is a draft, re-recognised every ~400 ms and corrected in place with the minimum possible edit |
+| Insertion | [`src/inject.rs`](src/inject.rs) | clipboard + `Ctrl+V` by default (atomic), per-character Unicode input as a fallback for terminals |
+| Indicator | [`src/overlay.rs`](src/overlay.rs), [`src/hud.rs`](src/hud.rs) | a native layered Win32 window in its own thread — click-through, never takes focus |
 
-## Многослойная стратегия доступа к микрофону
+Comments in the source explain **why** something is done a particular way; the awkward
+decisions usually encode a measurement or a Windows quirk. Please keep that style.
 
-Реализована в [`src/mic`](src/mic):
+## Building from source
 
-| Слой | Модуль | Назначение |
-|------|--------|-----------|
-| 1. Проверка | [`permission.rs`](src/mic/permission.rs) | Читает три тумблера приватности из реестра (`ConsentStore\microphone`: HKLM, HKCU, `NonPackaged`) + официальный `AppCapability` API и сводит их в итоговый статус. |
-| 2. Официальный запрос | [`winrt.rs`](src/mic/winrt.rs) | WinRT `MediaCapture` — рекомендованный Microsoft способ; на десктопном `.exe` (Win10 1903+) вызывает системный диалог согласия. |
-| 3. Резервный (hard) | [`wasapi.rs`](src/mic/wasapi.rs) | Прямой Core Audio / WASAPI: перечисление устройств, `IAudioClient`, живой захват PCM, запись в WAV и уровень сигнала — в обход WinRT. |
+The toolchain is pinned in `rust-toolchain.toml` (Rust **GNU**), so `rustup` picks it up
+automatically. You also need **mingw-w64** on `PATH` — the build embeds the application
+icon with `windres`.
 
-Вся работа с COM вынесена в фоновые потоки, UI не блокируется ни на миллисекунду.
-
-### Захват: SHARED → EXCLUSIVE fallback
-
-Некоторые драйверы (например Realtek-аналоговые входы) **отклоняют разделяемый (shared) режим
-захвата** с ошибкой `E_INVALIDARG`, хотя микрофон исправен. Поэтому `run_capture` сначала
-пробует кооперативный shared-режим с родным mix-форматом, а при отказе переключается на жёсткий
-**exclusive-режим** (16-бит PCM, буфер = период устройства). Это и есть «резервный хардкорный»
-путь — он открывает капризные микрофоны, недоступные обычным способом.
-
-### Запись и диагностика
-
-- В GUI: галочка **«Записывать в .wav»**, выбрать устройство → **Старт** → говорить → **Стоп**.
-  Файлы `tvoice_ГГГГММДД_ЧЧММСС.wav` попадают в папку `recordings/` рядом с `.exe`
-  (кнопка «📂 открыть папку записей»).
-- `tvoice --probe` — статус доступа, список устройств и скан режимов инициализации по каждому.
-- `tvoice --rec-test [сек]` — headless-запись N секунд с устройства по умолчанию (по умолчанию 3).
-
-## Голосовая диктовка (локально, офлайн)
-
-Интерфейс разбит на вкладки: **Микрофон** · **Модели** · **Диктовка**.
-
-**Движок:** внешний [whisper.cpp](https://github.com/ggml-org/whisper.cpp) (модели OpenAI **Whisper**,
-лицензия MIT — бесплатны, работают офлайн, без ключей). Скачивается из приложения.
-
-**Вкладка «Модели»** ([ui_models.rs](src/ui_models.rs)):
-- разовая загрузка движка `whisper.cpp` (кнопка);
-- каталог моделей с параметрами (скорость / ориентировочная точность % / размер), загрузка с
-  прогрессом и выбор активной. Файлы — в `models/`, движок — в `bin/` рядом с `.exe`.
-
-**Вкладка «Диктовка»** ([ui_dictation.rs](src/ui_dictation.rs)):
-- глобальный хоткей push-to-talk (по умолчанию **Ctrl + Alt + Space**), **настраиваемый захватом**:
-  кнопка «Изменить — зажмите клавиши», после чего можно нажать любую комбинацию, включая
-  **боковые кнопки мыши** X1/X2 ([hotkey.rs](src/hotkey.rs), опрос `GetAsyncKeyState`);
-- выбор языка (рус/англ/… или «авто»), опция вставки в курсор, кнопка **теста без вставки**;
-- по отпусканию: запись → ресемпл 16 кГц ([audio.rs](src/audio.rs)) → распознавание
-  ([transcribe.rs](src/transcribe.rs)) → текст вставляется в активное окно
-  ([inject.rs](src/inject.rs)): основной способ — через буфер обмена + Ctrl+V (надёжно, целиком,
-  прежний буфер восстанавливается), запасной — посимвольный Unicode-ввод.
-
-**Индикатор у курсора** ([overlay.rs](src/overlay.rs)): во время диктовки над курсором висит
-маленькое прозрачное окно (поверх всех, click-through, не забирает фокус), пульсирующее в такт
-уровню звука. Реализовано как **нативное Win32-окно** (layered + color-key) в отдельном потоке —
-надёжно, не зависит от фокуса основного окна.
-
-**Загрузки с докачкой и автоповтором:** прерванная загрузка модели/движка **продолжается** с места
-обрыва (HTTP Range, файл `*.part`), а не заново. При обрыве связи качалка сама переподключается и
-докачивает (тайм-аут на зависшее чтение + повтор) — важно для больших файлов вроде GPU-сборки (~680 МБ).
-
-**Шрифт:** в приложение встроен DejaVu Sans ([assets/DejaVuSans.ttf](assets/DejaVuSans.ttf)) как
-запасной — чтобы стрелки/спецсимволы отображались, а не «квадратами» (недостающими глифами).
-
-**Скорость — резидентный `whisper-server`** ([server.rs](src/server.rs)): модель грузится ОДИН раз
-и висит в памяти, распознавание идёт по HTTP — без перезагрузки модели на каждую фразу (в разы
-быстрее для тяжёлых моделей). Сервер прогревается при старте, гасится при выходе и привязан к
-Job Object (`KILL_ON_JOB_CLOSE`), поэтому не остаётся висеть даже при краше. Если `whisper-server.exe`
-нет (старая загрузка движка) — автоматически откат на разовый `whisper-cli`.
-
-**Выбор движка (CPU / GPU):** во вкладке «Модели» видно активный движок и можно переключаться между
-CPU и GPU (NVIDIA CUDA, cuBLAS ~680 МБ). Скачанные архивы кэшируются (`bin/_whisper_cpu.zip`,
-`bin/_whisper_gpu.zip`), поэтому повторное переключение — **из кэша, без загрузки** (и офлайн).
-Перед распаковкой движок-сервер глушится (иначе его файлы заняты). После установки сервер сам
-перезапускается на новом движке. Vulkan-сборок для Windows у whisper.cpp нет — GPU только NVIDIA.
-
-**Настройки** (хоткей, модель, язык, вставка) сохраняются в `config.json` рядом с `.exe`
-([config.rs](src/config.rs)) и восстанавливаются при следующем запуске.
-
-Модели — открытый Whisper от OpenAI; это **не** GPT-4/ChatGPT (те закрытые и платные, скачать
-нельзя). Whisper же полностью бесплатен и локален.
-
-Диагностика: `tvoice --net-check` (проверка источников загрузки), `tvoice --selftest-stt`
-(сквозной тест: скачать движок+модель, записать 3с, распознать).
-
-## Тулчейн (эта машина)
-
-Проект использует самодостаточный **GNU**-тулчейн (`stable-x86_64-pc-windows-gnu`) — не требует
-Visual Studio C++ Build Tools, Windows SDK и прав администратора.
-
-**Важно:** если имя профиля пользователя содержит пробелы или кириллицу, линкер
-mingw (`ld.exe`) с такими путями не работает. Поэтому всё вынесено в чистые ASCII-пути:
-
-| Что | Где | Как задано |
-|-----|-----|-----------|
-| Rust (rustup + toolchains) | `C:\PITH\rust\.rustup` | env `RUSTUP_HOME` (User) |
-| Cargo (bin + registry cache) | `C:\PITH\rust\.cargo` | env `CARGO_HOME` (User) |
-| mingw-w64 (gcc + binutils + dlltool) | `C:\PITH\tools\mingw64` | пути закреплены в `.cargo/config.toml` |
-
-`dlltool.exe` из mingw нужен для генерации import-библиотек к WinAPI на GNU-таргете.
-
-### Сборка и запуск
-
-```powershell
-# cargo доступен как C:\PITH\rust\.cargo\bin\cargo.exe (env CARGO_HOME/RUSTUP_HOME уже заданы)
-cargo run                 # отладочная сборка (с консолью логов)
-cargo build --release     # релиз (~4.5 МБ, без консоли, оптимизированный .exe)
-cargo run -- --probe      # headless-самопроверка: статус доступа + список устройств
+```bash
+cargo build --release
+cargo run -- --probe        # headless check that the microphone core works
 ```
 
-## Переключение на MSVC (опционально, позже)
+If mingw-w64 is not on `PATH`, copy `.cargo/config.toml.example` to `.cargo/config.toml`
+and fix the paths. If your Windows profile name contains spaces or non-ASCII characters,
+move `CARGO_HOME` and `RUSTUP_HOME` to a short ASCII path first — mingw's linker cannot
+handle spaces in toolchain paths.
 
-Код полностью совместим с MSVC. Чтобы перейти, из-под администратора доустановите в
-Visual Studio компоненты «MSVC v143+ C++ build tools» и «Windows 11 SDK», затем:
+To build the installer too (needs [Inno Setup 6](https://jrsoftware.org/isdl.php)):
 
-```powershell
-rustup default stable-x86_64-pc-windows-msvc
+```bash
+powershell -ExecutionPolicy Bypass -File scripts/build-installer.ps1
 ```
 
-и удалите `rust-toolchain.toml`. Изменения в коде не требуются.
+## Releasing
+
+The version lives in `Cargo.toml` and nowhere else. Tag it and CI does the rest — builds
+the app, packages the installer, publishes a release with the artifact and checksums
+attached:
+
+```bash
+git tag v1.21.1 && git push origin v1.21.1
+```
+
+The workflow refuses to publish when the tag and `Cargo.toml` disagree.
+
+## Contributing
+
+Issues and pull requests are welcome. Two house rules:
+
+- bump the version in `Cargo.toml` with every change (manual SemVer);
+- keep source files under roughly 400 lines — split a module rather than grow it.
+
+The code is deliberately **not** rustfmt-formatted: the layout is hand-tuned around the
+comments, so please do not reformat wholesale.
+
+## License
+
+[MIT](LICENSE).
+
+Recognition is performed by [whisper.cpp](https://github.com/ggerganov/whisper.cpp) with
+[OpenAI Whisper](https://github.com/openai/whisper) models, downloaded at runtime under
+their own licences. The bundled fallback font is
+[DejaVu Sans](https://dejavu-fonts.github.io/).
