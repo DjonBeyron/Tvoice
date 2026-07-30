@@ -79,6 +79,8 @@ pub struct TvoiceApp {
     pub(crate) tray: Tray,
     /// Окно спрятано в трей.
     pub(crate) hidden: bool,
+    /// Боковая панель выдвинута поверх содержимого (открывается бургером).
+    pub(crate) sidebar_open: bool,
     /// Выход запрошен из трея — крестик такой запрос перехватывать не должен.
     pub(crate) quitting: bool,
     /// Когда был прошлый кадр — чтобы заметить, что цикл со спрятанным окном встал.
@@ -180,6 +182,7 @@ impl TvoiceApp {
                 ctx_for_tray,
             ),
             hidden,
+            sidebar_open: false,
             quitting: false,
             last_frame: std::time::Instant::now(),
             window_pos: egui::pos2(200.0, 120.0),

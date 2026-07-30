@@ -1,6 +1,6 @@
 [package]
 name = "tvoice"
-version = "1.22.1"
+version = "1.23.0"
 edition = "2021"
 description = "TVOICE — локальная голосовая диктовка на Windows 11 (микрофон + офлайн-транскрибация Whisper)"
 

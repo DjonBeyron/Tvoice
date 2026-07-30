@@ -162,10 +162,13 @@ impl TvoiceApp {
             );
 
             ui.add_space(t::XS);
+            // Бирки одноцветные. Разноцветные (оранжевая скорость, зелёная точность)
+            // читались как состояние — «плохо/хорошо», — хотя это просто характеристики
+            // модели, и ни одна из них сама по себе не хуже другой.
             ui.horizontal(|ui| {
-                k::tag(ui, &format!("{}: {}", tr("скорость", "speed"), info.speed()), t::WARN);
+                k::tag(ui, &format!("{}: {}", tr("скорость", "speed"), info.speed()), t::MUTED);
                 ui.add_space(t::BASE);
-                k::tag(ui, &format!("{} ~{}%", tr("точность", "accuracy"), info.accuracy), t::OK);
+                k::tag(ui, &format!("{} ~{}%", tr("точность", "accuracy"), info.accuracy), t::MUTED);
                 ui.add_space(t::BASE);
                 k::tag(ui, &fmt_size(info.size_mb), t::MUTED);
             });

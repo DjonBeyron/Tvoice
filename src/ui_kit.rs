@@ -11,7 +11,12 @@ use crate::theme as t;
 
 /// Заголовок раздела внутри карточки.
 pub fn heading(ui: &mut Ui, text: &str) {
-    ui.label(RichText::new(text).size(t::T_HEADLINE_SM).strong());
+    ui.label(
+        RichText::new(text)
+            .size(t::T_HEADLINE_SM)
+            .strong()
+            .color(t::HEADING),
+    );
 }
 
 /// Подпись над полем: мелкая, приглушённая, вразрядку.
@@ -85,11 +90,17 @@ pub fn row<R>(ui: &mut Ui, left: impl FnOnce(&mut Ui), right: impl FnOnce(&mut U
                 left(ui);
             },
         );
+        // Правой половине отдаём ВСЮ оставшуюся ширину строки, а не заранее посчитанные
+        // `right_w`: с фиксированной шириной блок вставал сразу за левой половиной, и
+        // кнопка повисала посреди карточки вместо правого края. Выравнивание
+        // `right_to_left` + `Align::Min` прижимает её к правому ВЕРХНЕМУ углу — там её и
+        // ищут глазами, когда слева несколько строк описания.
+        let rest = ui.available_width();
         ui.allocate_ui_with_layout(
-            Vec2::new(right_w, 0.0),
-            egui::Layout::right_to_left(egui::Align::Center),
+            Vec2::new(rest, 0.0),
+            egui::Layout::right_to_left(egui::Align::Min),
             |ui| {
-                ui.set_max_width(right_w);
+                ui.set_max_width(rest);
                 right(ui)
             },
         )
@@ -161,12 +172,17 @@ pub fn chip_on_line(ui: &mut Ui, left_center: egui::Pos2, text: &str, color: Col
     let p = ui.painter();
     p.rect_filled(rect, round, color.linear_multiply(0.12));
     p.rect_stroke(rect, round, Stroke::new(1.0_f32, color.linear_multiply(0.35)));
+    // Точку ставим по ОПТИЧЕСКОМУ центру надписи, а не по геометрическому центру пилюли.
+    // Строка шрифта несимметрична — сверху запас под выносные, снизу под нижние, — и
+    // точка, выставленная по геометрии, оказывалась на пиксель выше букв: замер на
+    // «Микрофон доступен» дал центр букв 61.5 против центра пилюли 60.5.
+    let ty = rect.center().y - galley.size().y / 2.0;
+    let ink_cy = ty + galley.mesh_bounds.center().y;
     p.circle_filled(
-        egui::pos2(rect.left() + pad + dot_r, rect.center().y),
+        egui::pos2(rect.left() + pad + dot_r, ink_cy),
         dot_r,
         color,
     );
-    let ty = rect.center().y - galley.size().y / 2.0;
     p.galley(
         egui::pos2(rect.left() + pad + dot_r * 2.0 + gap, ty),
         galley,
@@ -200,6 +216,37 @@ pub fn pill_button_on_line(
             .rounding(Rounding::same(PILL_H / 2.0)),
     );
     (resp, w)
+}
+
+/// Кнопка-бургер: три полоски, центр — на заданной осевой линии. Возвращает занятую ширину
+/// и переключает переданный признак по нажатию.
+pub fn burger_button(ui: &mut Ui, left_center: egui::Pos2, open: &mut bool) -> f32 {
+    let size = PILL_H;
+    let rect = egui::Rect::from_min_size(
+        egui::pos2(left_center.x, left_center.y - size / 2.0),
+        Vec2::splat(size),
+    );
+    // Именно `interact`, а не `allocate_rect`: строка шапки уже размечена целиком, и
+    // повторная разметка того же места нажатий не получала.
+    let resp = ui.interact(rect, ui.id().with("burger"), Sense::click());
+    let color = if resp.hovered() || *open { t::ON_SURFACE } else { t::MUTED };
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, Rounding::same(t::R_SM), t::SURFACE_HIGH);
+    }
+    let p = ui.painter();
+    let bar_w = size * 0.5;
+    let x0 = rect.center().x - bar_w / 2.0;
+    for i in 0..3 {
+        let y = rect.center().y + (i as f32 - 1.0) * 5.0;
+        p.line_segment(
+            [egui::pos2(x0, y), egui::pos2(x0 + bar_w, y)],
+            Stroke::new(1.5_f32, color),
+        );
+    }
+    if resp.clicked() {
+        *open = !*open;
+    }
+    size
 }
 
 /// Метка-бирка без точки (скорость, точность, размер).

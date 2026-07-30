@@ -14,7 +14,6 @@ use crate::ui_kit as k;
 
 impl TvoiceApp {
     pub(crate) fn shell(&mut self, ctx: &egui::Context) {
-        self.sidebar(ctx);
         self.topbar(ctx);
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(t::BG))
@@ -22,23 +21,55 @@ impl TvoiceApp {
                 Route::Main => self.screen_main(ui),
                 Route::Settings => self.screen_settings(ui),
             });
+        // Панель рисуем ПОСЛЕ содержимого: она всплывает над ним, а не раздвигает его.
+        // Постоянно занимать треть узкого окна ради двух пунктов незачем.
+        self.sidebar_overlay(ctx);
     }
 
-    fn sidebar(&mut self, ctx: &egui::Context) {
-        egui::SidePanel::left("sidebar")
-            .exact_width(t::SIDEBAR)
-            .resizable(false)
-            .frame(
+    /// Выдвижная боковая панель поверх содержимого.
+    fn sidebar_overlay(&mut self, ctx: &egui::Context) {
+        if !self.sidebar_open {
+            return;
+        }
+        let screen = ctx.screen_rect();
+        // Затемнение под панелью: и отделяет её от содержимого, и закрывает по клику мимо —
+        // иначе панель пришлось бы закрывать тем же бургером, что неочевидно.
+        egui::Area::new(egui::Id::new("sidebar_scrim"))
+            .order(egui::Order::Middle)
+            .fixed_pos(screen.min)
+            .show(ctx, |ui| {
+                let resp = ui.allocate_rect(screen, egui::Sense::click());
+                ui.painter()
+                    .rect_filled(screen, Rounding::ZERO, egui::Color32::from_black_alpha(110));
+                if resp.clicked() {
+                    self.sidebar_open = false;
+                }
+            });
+
+        egui::Area::new(egui::Id::new("sidebar"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(screen.min)
+            .show(ctx, |ui| {
                 egui::Frame::none()
                     .fill(t::SURFACE)
+                    .stroke(egui::Stroke::new(1.0_f32, t::OUTLINE.linear_multiply(0.5)))
                     .inner_margin(egui::Margin {
                         left: 0.0,
                         right: 0.0,
                         top: t::LG,
                         bottom: t::MD,
-                    }),
-            )
-            .show(ctx, |ui| {
+                    })
+                    .show(ui, |ui| {
+                        ui.set_width(t::SIDEBAR);
+                        ui.set_height(screen.height() - t::LG - t::MD);
+                        self.sidebar_body(ui);
+                    });
+            });
+    }
+
+    fn sidebar_body(&mut self, ui: &mut egui::Ui) {
+        {
+            {
                 ui.horizontal(|ui| {
                     ui.add_space(t::MD);
                     ui.label(
@@ -53,9 +84,11 @@ impl TvoiceApp {
                 let route = self.route;
                 if self.nav_item(ui, route == Route::Main, tr("Диктовка", "Dictation")) {
                     self.route = Route::Main;
+                    self.sidebar_open = false;
                 }
                 if self.nav_item(ui, route == Route::Settings, tr("Настройки", "Settings")) {
                     self.route = Route::Settings;
+                    self.sidebar_open = false;
                 }
 
                 // Низ панели: состояние диктовки одним взглядом.
@@ -82,7 +115,8 @@ impl TvoiceApp {
                         ui.label(RichText::new(text).size(t::T_LABEL).color(color));
                     });
                 });
-            });
+            }
+        }
     }
 
     /// Пункт бокового меню: активный помечен полосой слева и заливкой.
@@ -142,6 +176,10 @@ impl TvoiceApp {
                 );
                 let cy = rect.center().y;
 
+                // Бургер — первым в строке: панель теперь всплывающая, и открыть её больше
+                // неоткуда.
+                let burger_w = k::burger_button(ui, egui::pos2(rect.left(), cy), &mut self.sidebar_open);
+
                 let name = match self.route {
                     Route::Main => tr("Диктовка", "Dictation"),
                     Route::Settings => tr("Настройки", "Settings"),
@@ -152,14 +190,15 @@ impl TvoiceApp {
                     t::ON_SURFACE,
                 );
                 let title_w = title.size().x;
+                let title_x = rect.left() + burger_w + t::SM;
                 ui.painter().galley(
-                    egui::pos2(rect.left(), cy - title.size().y / 2.0),
+                    egui::pos2(title_x, cy - title.size().y / 2.0),
                     title,
                     t::ON_SURFACE,
                 );
 
                 let (text, color) = self.permission_chip();
-                k::chip_on_line(ui, egui::pos2(rect.left() + title_w + t::SM, cy), text, color);
+                k::chip_on_line(ui, egui::pos2(title_x + title_w + t::SM, cy), text, color);
 
                 let (resp, _) =
                     k::pill_button_on_line(ui, egui::pos2(rect.right(), cy), tr("В трей", "To tray"));
@@ -247,7 +286,8 @@ pub fn column_width(ui: &egui::Ui) -> f32 {
 
 /// Сколько места остаётся содержимому по горизонтали.
 fn room(ui: &egui::Ui) -> f32 {
-    ui.ctx().screen_rect().width() - t::SIDEBAR - 2.0 * t::LG - t::SM
+    // Боковую панель не вычитаем: она всплывает поверх содержимого и места не занимает.
+    ui.ctx().screen_rect().width() - 2.0 * t::LG - t::SM
 }
 
 /// Отступ слева, которым колонка ставится по центру свободного места.
@@ -266,25 +306,25 @@ pub fn column_pad(ui: &egui::Ui) -> f32 {
 /// одинаково, поэтому на любой ширине окна они стоят на одной вертикали.
 pub fn content_column(ui: &mut egui::Ui, width: f32, add: impl FnOnce(&mut egui::Ui)) {
     let pad = column_pad(ui);
-    ui.horizontal_top(|ui| {
-        if pad > 0.0 {
-            ui.add_space(pad);
-        }
-        ui.allocate_ui_with_layout(
-            egui::vec2(width, 0.0),
-            egui::Layout::top_down(egui::Align::Min),
-            |ui| {
-                ui.set_max_width(width);
-                // Жёсткая отсечка по колонке: даже если какой-то виджет посчитает себя шире
-                // положенного, он не нарисуется поверх соседней панели и за краем окна.
-                let clip = ui.clip_rect();
-                let left = ui.max_rect().left();
-                ui.set_clip_rect(egui::Rect::from_min_max(
-                    egui::pos2(left, clip.top()),
-                    egui::pos2((left + width).min(clip.right()), clip.bottom()),
-                ));
-                add(ui);
-            },
-        );
+    // Смещение задаём прямоугольником, а не горизонтальной раскладкой с отступом.
+    // Обёртка `ui.horizontal` меняла то, какую ширину считает доступной вложенный код:
+    // карточки внутри брали ширину строки, а не колонки, и в окне исходного размера
+    // вылезали за правый край — кнопки и чипы обрезались.
+    let avail = ui.available_rect_before_wrap();
+    let rect = egui::Rect::from_min_size(
+        egui::pos2(avail.left() + pad, avail.top()),
+        egui::vec2(width, avail.height()),
+    );
+    ui.allocate_ui_at_rect(rect, |ui| {
+        ui.set_max_width(width);
+        // Жёсткая отсечка по колонке: даже если какой-то виджет посчитает себя шире
+        // положенного, он не нарисуется поверх соседней панели и за краем окна.
+        let clip = ui.clip_rect();
+        let left = ui.max_rect().left();
+        ui.set_clip_rect(egui::Rect::from_min_max(
+            egui::pos2(left, clip.top()),
+            egui::pos2((left + width).min(clip.right()), clip.bottom()),
+        ));
+        add(ui);
     });
 }
