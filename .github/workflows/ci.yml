@@ -17,7 +17,7 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # GNU-таргету нужен gcc как драйвер компоновки, а build.rs берёт windres для
       # встраивания значка в .exe. И то, и другое приходит с mingw-w64.
