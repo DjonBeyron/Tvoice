@@ -16,7 +16,10 @@ pub struct Config {
     pub vk: u16,
     pub key_name: String,
     pub model: Option<String>,
+    /// Язык РАСПОЗНАВАНИЯ (на каком говорят): "ru", "en", "auto", …
     pub lang: String,
+    /// Язык ИНТЕРФЕЙСА: "ru" или "en". Пусто — ещё не выбирали, возьмём язык системы.
+    pub ui_lang: String,
     pub insert: bool,
     pub streaming: bool,
     /// Способ вставки: 0 — авто, 1 — клавиатура, 2 — буфер обмена (см. `inject`).
@@ -45,6 +48,9 @@ impl Default for Config {
             key_name: h.key_name,
             model: None,
             lang: "ru".to_string(),
+            // Пусто, а не "ru": при первом запуске подставим язык системы, иначе
+            // англоязычный пользователь увидел бы русское меню и не нашёл в нём переключатель.
+            ui_lang: String::new(),
             insert: true,
             streaming: true,
             paste_mode: crate::inject::MODE_AUTO,
@@ -57,6 +63,11 @@ impl Default for Config {
 }
 
 impl Config {
+    /// Язык интерфейса: из настроек, а если там пусто — язык системы.
+    pub fn ui_lang(&self) -> crate::lang::Lang {
+        crate::lang::Lang::from_id(&self.ui_lang).unwrap_or_else(crate::lang::from_system)
+    }
+
     pub fn hotkey(&self) -> HotkeyConfig {
         HotkeyConfig {
             ctrl: self.ctrl,

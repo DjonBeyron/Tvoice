@@ -20,17 +20,27 @@ pub struct ModelInfo {
     pub file: &'static str,
     /// Размер, МБ (приблизительно).
     pub size_mb: u32,
-    /// Ярлык скорости на CPU.
-    pub speed: &'static str,
+    /// Ярлык скорости на CPU: русский и английский.
+    pub speed: (&'static str, &'static str),
     /// Ориентировочная точность для русского, %.
     pub accuracy: u8,
-    /// Человекочитаемое описание/рекомендация.
-    pub desc: &'static str,
+    /// Описание/рекомендация: русский и английский.
+    pub desc: (&'static str, &'static str),
 }
 
 impl ModelInfo {
     pub fn url(&self) -> String {
         format!("{HF_BASE}{}", self.file)
+    }
+
+    /// Ярлык скорости на языке интерфейса.
+    pub fn speed(&self) -> &'static str {
+        crate::lang::tr(self.speed.0, self.speed.1)
+    }
+
+    /// Описание на языке интерфейса.
+    pub fn desc(&self) -> &'static str {
+        crate::lang::tr(self.desc.0, self.desc.1)
     }
 }
 
@@ -40,41 +50,56 @@ pub const CATALOG: &[ModelInfo] = &[
         id: "tiny",
         file: "ggml-tiny.bin",
         size_mb: 75,
-        speed: "очень быстро",
+        speed: ("очень быстро", "very fast"),
         accuracy: 70,
-        desc: "Для слабых ПК и проб. Годится для коротких простых фраз.",
+        desc: (
+            "Для слабых ПК и проб. Годится для коротких простых фраз.",
+            "For weak PCs and quick trials. Fine for short simple phrases.",
+        ),
     },
     ModelInfo {
         id: "base",
         file: "ggml-base.bin",
         size_mb: 148,
-        speed: "быстро",
+        speed: ("быстро", "fast"),
         accuracy: 78,
-        desc: "Хороший баланс для старта: шустро и приемлемо по качеству.",
+        desc: (
+            "Хороший баланс для старта: шустро и приемлемо по качеству.",
+            "A good starting balance: quick and acceptable quality.",
+        ),
     },
     ModelInfo {
         id: "small",
         file: "ggml-small.bin",
         size_mb: 488,
-        speed: "средне",
+        speed: ("средне", "medium"),
         accuracy: 87,
-        desc: "Заметно точнее base. Рекомендуется для повседневной диктовки.",
+        desc: (
+            "Заметно точнее base. Рекомендуется для повседневной диктовки.",
+            "Noticeably more accurate than base. Recommended for everyday dictation.",
+        ),
     },
     ModelInfo {
         id: "medium",
         file: "ggml-medium.bin",
         size_mb: 1536,
-        speed: "медленно",
+        speed: ("медленно", "slow"),
         accuracy: 93,
-        desc: "Отличное качество, но тяжёлая для CPU.",
+        desc: (
+            "Отличное качество, но тяжёлая для CPU.",
+            "Excellent quality, but heavy on the CPU.",
+        ),
     },
     ModelInfo {
         id: "large-v3-turbo",
         file: "ggml-large-v3-turbo-q5_0.bin",
         size_mb: 574,
-        speed: "быстро (turbo)",
+        speed: ("быстро (turbo)", "fast (turbo)"),
         accuracy: 95,
-        desc: "Лучшее качество/скорость (квантизованная). Рекомендуется, если хватает места.",
+        desc: (
+            "Лучшее качество/скорость (квантизованная). Рекомендуется, если хватает места.",
+            "Best quality per speed (quantised). Recommended if you have the space.",
+        ),
     },
 ];
 

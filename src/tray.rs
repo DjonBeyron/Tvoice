@@ -9,7 +9,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 
-use windows::core::PCWSTR;
+use windows::core::{HSTRING, PCWSTR};
+
+use crate::lang::tr;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Shell::{
@@ -268,15 +270,20 @@ unsafe fn show_menu(hwnd: HWND) {
     let Ok(menu) = CreatePopupMenu() else {
         return;
     };
-    let dictate = if DICTATING.load(Ordering::Relaxed) {
-        windows::core::w!("Остановить диктовку")
+    // Подписи собираются на ходу: язык интерфейса переключается без перезапуска, поэтому
+    // строки нельзя зашить макросом `w!` (он делает их на этапе компиляции). HSTRING
+    // держим в переменных до конца вызовов — `AppendMenuW` копирует текст себе.
+    let show = HSTRING::from(tr("Открыть TVOICE", "Open TVOICE"));
+    let dictate = HSTRING::from(if DICTATING.load(Ordering::Relaxed) {
+        tr("Остановить диктовку", "Stop dictation")
     } else {
-        windows::core::w!("Начать диктовку")
-    };
-    let _ = AppendMenuW(menu, MF_STRING, ID_SHOW, windows::core::w!("Открыть TVOICE"));
-    let _ = AppendMenuW(menu, MF_STRING, ID_DICTATE, dictate);
+        tr("Начать диктовку", "Start dictation")
+    });
+    let quit = HSTRING::from(tr("Выход", "Quit"));
+    let _ = AppendMenuW(menu, MF_STRING, ID_SHOW, PCWSTR(show.as_ptr()));
+    let _ = AppendMenuW(menu, MF_STRING, ID_DICTATE, PCWSTR(dictate.as_ptr()));
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-    let _ = AppendMenuW(menu, MF_STRING, ID_QUIT, windows::core::w!("Выход"));
+    let _ = AppendMenuW(menu, MF_STRING, ID_QUIT, PCWSTR(quit.as_ptr()));
 
     // Без этого меню не закроется по клику мимо него (документированная особенность).
     let _ = SetForegroundWindow(hwnd);

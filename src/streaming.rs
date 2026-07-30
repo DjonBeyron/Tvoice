@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::lang::tr;
 use crate::dictation::SharedDictation;
 use crate::mic::LiveCapture;
 use crate::vad::{Segment, Vad};
@@ -171,12 +172,12 @@ pub fn run(
                         let preroll = PREROLL.as_millis() as usize * rate / 1000;
                         committed += seg.analysed.saturating_sub(preroll);
                     }
-                    set_state(&status, &ctx, "Слушаю… (говорите)");
+                    set_state(&status, &ctx, tr("Слушаю… (говорите)", "Listening… (speak)"));
                     thread::sleep(TICK);
                     continue;
                 }
                 if voiced < MIN_SPEECH || Instant::now() < next_draft {
-                    set_state(&status, &ctx, "Слушаю… (говорите)");
+                    set_state(&status, &ctx, tr("Слушаю… (говорите)", "Listening… (speak)"));
                     thread::sleep(TICK);
                     continue;
                 }
@@ -270,9 +271,14 @@ pub fn run(
         if let Ok(mut s) = status.lock() {
             s.busy = false;
             s.state = if idle_stop {
-                format!("Тишина {}с — захват остановлен", IDLE_LIMIT.as_secs())
+                format!(
+                    "{} {}{}",
+                    tr("Тишина", "Silence"),
+                    IDLE_LIMIT.as_secs(),
+                    tr("с — захват остановлен", "s — capture stopped")
+                )
             } else {
-                "Готово ✓".into()
+                tr("Готово ✓", "Done ✓").into()
             };
             // Останов по тишине приложение должно довести до конца: погасить микрофон,
             // снять состояние «диктую» и убрать индикатор — про это знает только оно.

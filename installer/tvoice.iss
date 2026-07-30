@@ -31,8 +31,9 @@ AppUpdatesURL={#AppURL}/releases
 VersionInfoVersion={#AppVersion}
 
 ; Пользовательская установка: без UAC и без записи в общие папки.
+; Только пользовательская установка, вариант «для всех» не предлагаем: папка лежит внутри
+; профиля одного пользователя, и общие ярлыки указывали бы в чужой профиль.
 PrivilegesRequired=lowest
-PrivilegesRequiredOverridesAllowed=dialog
 DefaultDirName={localappdata}\Programs\{#AppName}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
@@ -139,4 +140,23 @@ begin
   Result := True;
   if CheckForMutexes('TVOICE_single_instance_v1') then
     Result := CloseRunning();
+end;
+
+// Передать программе язык, выбранный в начале установки.
+//
+// Пишем минимальный config.json: у структуры настроек стоит serde(default), поэтому
+// остальные поля возьмутся из значений по умолчанию. Имена языков в разделе [Languages]
+// заданы как ru/en, и {language} раскрывается ровно в тот код, который ждёт программа.
+//
+// Только если настроек ещё НЕТ: при обновлении поверх существующей установки перетирать
+// выбор пользователя нельзя — он мог сменить язык уже в самой программе.
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  Config: String;
+begin
+  if CurStep <> ssPostInstall then
+    Exit;
+  Config := ExpandConstant('{app}\config.json');
+  if not FileExists(Config) then
+    SaveStringToFile(Config, '{"ui_lang":"' + ExpandConstant('{language}') + '"}', False);
 end;

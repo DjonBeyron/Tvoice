@@ -5,6 +5,7 @@
 
 use egui::{RichText, Sense, Vec2};
 
+use crate::lang::tr;
 use crate::app::{Route, TvoiceApp};
 use crate::models;
 use crate::theme as t;
@@ -18,7 +19,7 @@ pub const LANGS: &[(&str, &str)] = &[
     ("de", "Deutsch"),
     ("fr", "Français"),
     ("es", "Español"),
-    ("auto", "Авто"),
+    ("auto", "Авто / Auto"),
 ];
 
 impl TvoiceApp {
@@ -67,11 +68,11 @@ impl TvoiceApp {
             let dictating = self.dictating;
             k::row(
                 ui,
-                |ui| k::label(ui, "Распознанный текст"),
+                |ui| k::label(ui, tr("Распознанный текст", "Recognised text")),
                 |ui| {
                     let color = if dictating { t::PRIMARY } else { t::MUTED };
                     ui.label(
-                        RichText::new(if state.is_empty() { "Ожидание" } else { &state })
+                        RichText::new(if state.is_empty() { tr("Ожидание", "Idle") } else { &state })
                             .size(t::T_LABEL)
                             .color(color),
                     );
@@ -86,10 +87,12 @@ impl TvoiceApp {
                 ui.add_space(100.0);
             } else if text.is_empty() {
                 ui.label(
-                    RichText::new(
+                    RichText::new(tr(
                         "Нажмите кнопку ниже или хоткей — текст появится здесь \
                          и сразу пойдёт в активное окно.",
-                    )
+                        "Press the button below or your hotkey — the text will appear here \
+                         and go straight into the active window.",
+                    ))
                     .size(t::T_BODY)
                     .color(t::MUTED),
                 );
@@ -112,13 +115,13 @@ impl TvoiceApp {
     fn level_row(&mut self, ui: &mut egui::Ui) {
         k::card(ui, |ui| {
             let db = if self.level > 1e-5 {
-                format!("{:.0} дБ", 20.0 * self.level.log10())
+                format!("{:.0} {}", 20.0 * self.level.log10(), tr("дБ", "dB"))
             } else {
                 "—".to_string()
             };
             k::row(
                 ui,
-                |ui| k::label(ui, "Уровень микрофона"),
+                |ui| k::label(ui, tr("Уровень микрофона", "Microphone level")),
                 |ui| ui.label(RichText::new(db).size(t::T_LABEL).color(t::MUTED)),
             );
             ui.add_space(t::XS);
@@ -136,13 +139,13 @@ impl TvoiceApp {
             }
             let combo = self.hotkey.label();
             let (text, hint) = if self.dictating {
-                ("Остановить", format!("Идёт запись — говорите, или нажмите {combo}"))
+                (tr("Остановить", "Stop"), format!("{} {combo}", tr("Идёт запись — говорите, или нажмите", "Recording — speak, or press")))
             } else if ready {
-                ("Начать диктовку", format!("или нажмите {combo}"))
+                (tr("Начать диктовку", "Start dictation"), format!("{} {combo}", tr("или нажмите", "or press")))
             } else {
                 (
-                    "Начать диктовку",
-                    "сначала скачайте движок и модель".to_string(),
+                    tr("Начать диктовку", "Start dictation"),
+                    tr("сначала скачайте движок и модель", "download the engine and a model first").to_string(),
                 )
             };
 
@@ -163,7 +166,7 @@ impl TvoiceApp {
             );
             if !ready {
                 ui.add_space(t::XS);
-                if k::ghost_button(ui, "Открыть настройки движка").clicked() {
+                if k::ghost_button(ui, tr("Открыть настройки движка", "Open engine settings")).clicked() {
                     self.route = Route::Settings;
                     self.settings_tab = crate::app::SettingsTab::Engine;
                 }
@@ -181,7 +184,7 @@ impl TvoiceApp {
             let ready_now = ready;
             k::row(ui, |ui| {
             ui.horizontal(|ui| {
-            k::label(ui, "Язык");
+            k::label(ui, tr("Язык", "Language"));
             ui.add_space(t::XS);
             egui::ComboBox::from_id_source("lang")
                 .selected_text(RichText::new(current).size(t::T_BODY))
@@ -203,7 +206,7 @@ impl TvoiceApp {
                     .as_ref()
                     .and_then(|id| models::by_id(id))
                     .map(|m| m.id)
-                    .unwrap_or("модель не выбрана");
+                    .unwrap_or(tr("модель не выбрана", "no model selected"));
                 ui.label(RichText::new(model).size(t::T_LABEL).color(t::MUTED));
                 ui.add_space(t::XS);
                 k::dot(ui, if ready_now { t::OK } else { t::WARN }, 5.0);

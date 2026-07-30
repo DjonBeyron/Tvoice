@@ -4,6 +4,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::lang::tr;
 use crate::app::TvoiceApp;
 use crate::dictation;
 use crate::hotkey::HotkeyEvent;
@@ -97,20 +98,22 @@ impl TvoiceApp {
         let err = |app: &Self, msg: &str| {
             if let Ok(mut s) = app.dictation.lock() {
                 s.error = Some(msg.to_string());
-                s.state = format!("Ошибка: {msg}");
+                s.state = format!("{}: {msg}", tr("Ошибка", "Error"));
                 s.busy = false;
             }
         };
         if models::whisper_exe().is_none() {
-            err(self, "whisper.cpp не установлен — вкладка «Модели»");
+            err(self, tr("whisper.cpp не установлен — раздел «Движок и модели»",
+                         "whisper.cpp is not installed — see Engine and models"));
             return;
         }
         let Some(info) = self.selected_model.as_ref().and_then(|id| models::by_id(id)) else {
-            err(self, "Выберите модель во вкладке «Модели»");
+            err(self, tr("Выберите модель в разделе «Движок и модели»",
+                         "Pick a model in Engine and models"));
             return;
         };
         if !models::is_downloaded(info.file) {
-            err(self, "Модель не скачана");
+            err(self, tr("Модель не скачана", "The model is not downloaded"));
             return;
         }
         let model_file = info.file.to_string();
@@ -152,7 +155,7 @@ impl TvoiceApp {
             if let Ok(mut s) = self.dictation.lock() {
                 s.busy = true;
                 s.error = None;
-                s.state = "Слушаю… (говорите)".into();
+                s.state = tr("Слушаю… (говорите)", "Listening… (speak)").into();
                 s.last_text.clear();
                 s.auto_stop = false; // от прошлого сеанса флаг остаться не должен
             }
@@ -171,7 +174,7 @@ impl TvoiceApp {
             if let Ok(mut s) = self.dictation.lock() {
                 s.busy = true;
                 s.error = None;
-                s.state = "Запись… (говорите)".into();
+                s.state = tr("Запись… (говорите)", "Recording… (speak)").into();
             }
         }
     }

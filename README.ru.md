@@ -8,10 +8,13 @@
 Нажали кнопку, сказали — текст появился в том окне, где вы печатали.
 Ничего не уходит с вашей машины.
 
-[![Последняя версия](https://img.shields.io/github/v/release/DjonBeyron/Tvoice?label=версия&color=7c5cff)](https://github.com/DjonBeyron/Tvoice/releases/latest)
-[![Скачать для Windows](https://img.shields.io/badge/скачать-установщик%20Windows-2ea043?logo=windows&logoColor=white)](https://github.com/DjonBeyron/Tvoice/releases/latest)
+### [![Скачать для Windows](https://img.shields.io/github/v/release/DjonBeyron/Tvoice?label=%E2%AC%87%20%D0%A1%D0%9A%D0%90%D0%A7%D0%90%D0%A2%D0%AC%20%D0%94%D0%9B%D0%AF%20WINDOWS&labelColor=2ea043&color=1f6feb&style=for-the-badge&logo=windows&logoColor=white)](https://github.com/DjonBeyron/Tvoice/releases/latest)
+
+Бесплатно · офлайн · без аккаунта — установщик, права администратора не нужны
+
 [![CI](https://github.com/DjonBeyron/Tvoice/actions/workflows/ci.yml/badge.svg)](https://github.com/DjonBeyron/Tvoice/actions/workflows/ci.yml)
-[![Лицензия: MIT](https://img.shields.io/badge/лицензия-MIT-blue)](LICENSE)
+[![Лицензия: MIT](https://img.shields.io/badge/%D0%BB%D0%B8%D1%86%D0%B5%D0%BD%D0%B7%D0%B8%D1%8F-MIT-blue)](LICENSE)
+[![Интерфейс: RU / EN](https://img.shields.io/badge/%D0%B8%D0%BD%D1%82%D0%B5%D1%80%D1%84%D0%B5%D0%B9%D1%81-RU%20%2F%20EN-7c5cff)](#как-пользоваться)
 
 **[English version](README.md)**
 
@@ -75,7 +78,7 @@
 
 ## Первый запуск
 
-1. Откройте **Настройки → Модели**.
+1. Откройте **Настройки → «Движок и модели»**.
 2. Нажмите **Скачать движок** — загрузится сборка whisper.cpp, с поддержкой CUDA, если у
    вас NVIDIA.
 3. Выберите модель и скачайте её:
@@ -92,12 +95,18 @@
 
 ## Как пользоваться
 
-**Хоткей.** По умолчанию `Ctrl + Alt + Space`. Меняется в **Настройках → Хоткеи**: нажмите
+**Хоткей.** По умолчанию `Ctrl + Alt + Space`. Меняется в **Настройках → «Ввод»**: нажмите
 *Задать* и зажмите нужное сочетание. Кнопки мыши тоже принимаются.
 
 **Потоковый режим** (по умолчанию) делает хоткей **переключателем**: нажали — начали,
 нажали снова — закончили. Удержание здесь намеренно не используется: зажатые клавиши
 «протекали» бы символами в целевое окно.
+
+**Язык интерфейса.** Русский или английский, переключается в **Настройках → «Микрофон и
+система» → «Язык интерфейса»** и применяется сразу, без перезапуска. Установщик спрашивает
+язык в начале, и программа открывается на нём; если выбор не делали ни разу, берётся язык
+Windows. Это не то же, что язык *распознавания* на экране «Диктовка» — тот про то, на каком
+языке вы говорите.
 
 **Индикатор.** Рядом с курсором пульсирует небольшая пилюля. Место и размер настраиваются.
 

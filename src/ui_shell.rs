@@ -6,6 +6,7 @@
 
 use egui::{RichText, Rounding, Sense, Vec2};
 
+use crate::lang::tr;
 use crate::app::{Route, SettingsTab, TvoiceApp};
 use crate::mic::PermissionState;
 use crate::theme as t;
@@ -50,10 +51,10 @@ impl TvoiceApp {
                 ui.add_space(t::LG);
 
                 let route = self.route;
-                if self.nav_item(ui, route == Route::Main, "Диктовка") {
+                if self.nav_item(ui, route == Route::Main, tr("Диктовка", "Dictation")) {
                     self.route = Route::Main;
                 }
-                if self.nav_item(ui, route == Route::Settings, "Настройки") {
+                if self.nav_item(ui, route == Route::Settings, tr("Настройки", "Settings")) {
                     self.route = Route::Settings;
                 }
 
@@ -72,9 +73,9 @@ impl TvoiceApp {
                     ui.horizontal(|ui| {
                         ui.add_space(t::MD);
                         let (text, color) = if self.dictating {
-                            ("Идёт запись", t::PRIMARY)
+                            (tr("Идёт запись", "Recording"), t::PRIMARY)
                         } else {
-                            ("Готов", t::MUTED)
+                            (tr("Готов", "Ready"), t::MUTED)
                         };
                         k::dot(ui, color, 6.0);
                         ui.add_space(t::BASE);
@@ -135,8 +136,8 @@ impl TvoiceApp {
                 let cy = rect.center().y;
 
                 let name = match self.route {
-                    Route::Main => "Диктовка",
-                    Route::Settings => "Настройки",
+                    Route::Main => tr("Диктовка", "Dictation"),
+                    Route::Settings => tr("Настройки", "Settings"),
                 };
                 let title = ui.painter().layout_no_wrap(
                     name.to_owned(),
@@ -154,7 +155,7 @@ impl TvoiceApp {
                 k::chip_on_line(ui, egui::pos2(rect.left() + title_w + t::SM, cy), text, color);
 
                 let (resp, _) =
-                    k::pill_button_on_line(ui, egui::pos2(rect.right(), cy), "В трей");
+                    k::pill_button_on_line(ui, egui::pos2(rect.right(), cy), tr("В трей", "To tray"));
                 let hide = resp.clicked();
                 if hide {
                     let ctx = self.ctx.clone();
@@ -175,10 +176,10 @@ impl TvoiceApp {
     /// Состояние доступа к микрофону — короткой строкой для шапки.
     pub(crate) fn permission_chip(&self) -> (&'static str, egui::Color32) {
         match self.permission.as_ref().map(|r| r.effective) {
-            Some(PermissionState::Allowed) => ("Микрофон доступен", t::OK),
-            Some(PermissionState::Denied) => ("Микрофон запрещён", t::BAD),
-            Some(PermissionState::PromptRequired) => ("Нужен запрос доступа", t::WARN),
-            Some(PermissionState::Unknown) | None => ("Проверяю микрофон", t::MUTED),
+            Some(PermissionState::Allowed) => (tr("Микрофон доступен", "Microphone available"), t::OK),
+            Some(PermissionState::Denied) => (tr("Микрофон запрещён", "Microphone blocked"), t::BAD),
+            Some(PermissionState::PromptRequired) => (tr("Нужен запрос доступа", "Permission needed"), t::WARN),
+            Some(PermissionState::Unknown) | None => (tr("Проверяю микрофон", "Checking microphone"), t::MUTED),
         }
     }
 
@@ -191,9 +192,9 @@ impl TvoiceApp {
                     ui,
                     &mut tab,
                     &[
-                        (SettingsTab::Engine, "Движок и модели"),
-                        (SettingsTab::Hotkeys, "Ввод"),
-                        (SettingsTab::Privacy, "Микрофон и система"),
+                        (SettingsTab::Engine, tr("Движок и модели", "Engine and models")),
+                        (SettingsTab::Hotkeys, tr("Ввод", "Input")),
+                        (SettingsTab::Privacy, tr("Микрофон и система", "Microphone and system")),
                     ],
                 );
                 self.settings_tab = tab;

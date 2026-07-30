@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use crate::lang::tr;
 use crate::{audio, inject};
 
 /// Разделяемый статус диктовки для отображения в UI.
@@ -43,19 +44,19 @@ pub fn transcribe_and_insert(
         set(&status, &ctx, |s| {
             s.busy = true;
             s.error = None;
-            s.state = "Готовлю аудио…".into();
+            s.state = tr("Готовлю аудио…", "Preparing audio…").into();
         });
 
         let wav16 = recorded_wav.with_file_name("tvoice_dictation_16k.wav");
         if let Err(e) = audio::wav_to_16k_mono(&recorded_wav, &wav16) {
             crate::logln!("dictation: ресемпл ОШИБКА: {e}");
-            fail(&status, &ctx, format!("Аудио: {e}"));
+            fail(&status, &ctx, format!("{}: {e}", tr("Аудио", "Audio")));
             let _ = std::fs::remove_file(&recorded_wav);
             return;
         }
         crate::logln!("dictation: ресемпл ок → 16кГц");
 
-        set(&status, &ctx, |s| s.state = "Распознаю…".into());
+        set(&status, &ctx, |s| s.state = tr("Распознаю…", "Recognising…").into());
 
         let result = crate::server::transcribe(&wav16, &model_file, &lang);
         let _ = std::fs::remove_file(&recorded_wav);
@@ -74,7 +75,7 @@ pub fn transcribe_and_insert(
                         Ok(()) => crate::logln!("inject: готово"),
                         Err(_) => {
                             crate::logln!("inject: ПАНИКА поймана (см. строку PANIC выше)");
-                            fail(&status, &ctx, "сбой вставки (см. tvoice.log)".into());
+                            fail(&status, &ctx, tr("сбой вставки (см. tvoice.log)", "insertion failed (see tvoice.log)").into());
                             return;
                         }
                     }
@@ -82,14 +83,14 @@ pub fn transcribe_and_insert(
                 set(&status, &ctx, |s| {
                     s.busy = false;
                     s.last_text = text;
-                    s.state = if insert { "Вставлено ✓".into() } else { "Готово ✓".into() };
+                    s.state = if insert { tr("Вставлено ✓", "Inserted ✓").into() } else { tr("Готово ✓", "Done ✓").into() };
                 });
             }
             Ok(_) => {
                 crate::logln!("dictation: пусто");
                 set(&status, &ctx, |s| {
                     s.busy = false;
-                    s.state = "Пусто (речь не распознана)".into();
+                    s.state = tr("Пусто (речь не распознана)", "Empty (no speech recognised)").into();
                 });
             }
             Err(e) => {
@@ -111,6 +112,6 @@ fn fail(status: &SharedDictation, ctx: &egui::Context, msg: String) {
     set(status, ctx, |s| {
         s.busy = false;
         s.error = Some(msg.clone());
-        s.state = format!("Ошибка: {msg}");
+        s.state = format!("{}: {msg}", tr("Ошибка", "Error"));
     });
 }

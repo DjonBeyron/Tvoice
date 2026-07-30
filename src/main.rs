@@ -20,6 +20,7 @@ mod dictation;
 mod hotkey;
 mod hud;
 mod inject;
+mod lang;
 mod mic;
 mod models;
 mod mp3;

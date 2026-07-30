@@ -2,6 +2,7 @@
 
 use egui::RichText;
 
+use crate::lang::tr;
 use crate::app::TvoiceApp;
 use crate::models::{self, download, ModelInfo};
 use crate::theme as t;
@@ -12,11 +13,12 @@ impl TvoiceApp {
         self.engine_card(ui);
         ui.add_space(t::MD);
 
-        k::label(ui, "Модели распознавания");
+        k::label(ui, tr("Модели распознавания", "Recognition models"));
         ui.add_space(t::XS);
         k::hint(
             ui,
-            "Бесплатные модели Whisper, работают офлайн. Чем крупнее — тем точнее и медленнее.",
+            tr("Бесплатные модели Whisper, работают офлайн. Чем крупнее — тем точнее и медленнее.",
+               "Free Whisper models, working offline. The bigger, the more accurate and slower."),
         );
         ui.add_space(t::SM);
         for info in models::CATALOG {
@@ -32,14 +34,15 @@ impl TvoiceApp {
             k::row(
                 ui,
                 |ui| {
-                    k::heading(ui, "Движок whisper.cpp");
-                    k::hint(ui, "Считает распознавание. GPU в разы быстрее на тяжёлых моделях.");
+                    k::heading(ui, tr("Движок whisper.cpp", "whisper.cpp engine"));
+                    k::hint(ui, tr("Считает распознавание. GPU в разы быстрее на тяжёлых моделях.",
+                        "Does the recognition. A GPU is several times faster on heavy models."));
                 },
                 |ui| {
                     let (txt, col) = match active {
                         Some(models::Engine::Gpu) => ("GPU (NVIDIA)", t::OK),
                         Some(models::Engine::Cpu) => ("CPU", t::OK),
-                        None => ("не установлен", t::WARN),
+                        None => (tr("не установлен", "not installed"), t::WARN),
                     };
                     k::chip(ui, txt, col);
                 },
@@ -57,14 +60,14 @@ impl TvoiceApp {
             }
 
             ui.add_space(t::SM);
-            self.engine_option(ui, false, active, "CPU", "универсально, ~8 МБ");
+            self.engine_option(ui, false, active, "CPU", tr("универсально, ~8 МБ", "works anywhere, ~8 MB"));
             ui.add_space(t::XS);
             self.engine_option(
                 ui,
                 true,
                 active,
                 "GPU (NVIDIA CUDA)",
-                "быстрее, ~680 МБ, нужна карта NVIDIA",
+                tr("быстрее, ~680 МБ, нужна карта NVIDIA", "faster, ~680 MB, needs an NVIDIA card"),
             );
         });
     }
@@ -91,14 +94,14 @@ impl TvoiceApp {
                 },
                 |ui| {
                     if is_active {
-                        k::tag(ui, "активен", t::PRIMARY);
+                        k::tag(ui, tr("активен", "active"), t::PRIMARY);
                     } else {
                         let label = if cached {
-                            "Переключить".to_string()
+                            tr("Переключить", "Switch").to_string()
                         } else if gpu {
-                            "Скачать · 680 МБ".to_string()
+                            tr("Скачать · 680 МБ", "Download · 680 MB").to_string()
                         } else {
-                            "Скачать · 8 МБ".to_string()
+                            tr("Скачать · 8 МБ", "Download · 8 MB").to_string()
                         };
                         if ui.add_enabled(can, egui::Button::new(label)).clicked() {
                             download::start_whisper_binary(
@@ -130,12 +133,12 @@ impl TvoiceApp {
                         ui.label(RichText::new(info.id).size(t::T_BODY_LG).strong());
                         ui.add_space(t::XS);
                         if is_active {
-                            k::tag(ui, "используется", t::PRIMARY);
+                            k::tag(ui, tr("используется", "in use"), t::PRIMARY);
                         } else if downloaded {
-                            k::tag(ui, "скачана", t::OK);
+                            k::tag(ui, tr("скачана", "downloaded"), t::OK);
                         }
                     });
-                    k::hint(ui, info.desc);
+                    k::hint(ui, info.desc());
                 },
                 |ui| {
                     if this_downloading {
@@ -144,13 +147,13 @@ impl TvoiceApp {
                     if downloaded {
                         if is_active {
                             ui.add_space(t::BASE);
-                        } else if ui.button("Выбрать").clicked() {
+                        } else if ui.button(tr("Выбрать", "Select")).clicked() {
                             self.selected_model = Some(info.id.to_string());
                             self.dirty = true;
                         }
                     } else {
                         let can = !self.downloads_busy();
-                        let label = format!("Скачать · {}", fmt_size(info.size_mb));
+                        let label = format!("{} · {}", tr("Скачать", "Download"), fmt_size(info.size_mb));
                         if ui.add_enabled(can, egui::Button::new(label)).clicked() {
                             download::start_model(info, self.downloads.clone(), self.ctx.clone());
                         }
@@ -160,9 +163,9 @@ impl TvoiceApp {
 
             ui.add_space(t::XS);
             ui.horizontal(|ui| {
-                k::tag(ui, &format!("скорость: {}", info.speed), t::WARN);
+                k::tag(ui, &format!("{}: {}", tr("скорость", "speed"), info.speed()), t::WARN);
                 ui.add_space(t::BASE);
-                k::tag(ui, &format!("точность ~{}%", info.accuracy), t::OK);
+                k::tag(ui, &format!("{} ~{}%", tr("точность", "accuracy"), info.accuracy), t::OK);
                 ui.add_space(t::BASE);
                 k::tag(ui, &fmt_size(info.size_mb), t::MUTED);
             });
@@ -193,7 +196,7 @@ impl TvoiceApp {
             return;
         }
         let text = if total > 0 {
-            format!("{msg} · {} из {}", fmt_bytes(done), fmt_bytes(total))
+            format!("{msg} · {} {} {}", fmt_bytes(done), tr("из", "of"), fmt_bytes(total))
         } else {
             msg
         };
@@ -212,17 +215,17 @@ impl TvoiceApp {
 
 fn fmt_size(mb: u32) -> String {
     if mb >= 1024 {
-        format!("{:.1} ГБ", mb as f32 / 1024.0)
+        format!("{:.1} {}", mb as f32 / 1024.0, tr("ГБ", "GB"))
     } else {
-        format!("{mb} МБ")
+        format!("{mb} {}", tr("МБ", "MB"))
     }
 }
 
 fn fmt_bytes(b: u64) -> String {
     let mb = b as f64 / (1024.0 * 1024.0);
     if mb >= 1024.0 {
-        format!("{:.2} ГБ", mb / 1024.0)
+        format!("{:.2} {}", mb / 1024.0, tr("ГБ", "GB"))
     } else {
-        format!("{mb:.1} МБ")
+        format!("{mb:.1} {}", tr("МБ", "MB"))
     }
 }

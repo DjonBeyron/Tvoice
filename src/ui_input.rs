@@ -2,6 +2,7 @@
 
 use egui::RichText;
 
+use crate::lang::tr;
 use crate::app::TvoiceApp;
 use crate::inject;
 use crate::overlay;
@@ -26,15 +27,15 @@ impl TvoiceApp {
             k::row(
                 ui,
                 |ui| {
-                    k::heading(ui, "Горячая клавиша");
-                    k::hint(ui, "Работает поверх любого окна, в том числе из трея.");
+                    k::heading(ui, tr("Горячая клавиша", "Hotkey"));
+                    k::hint(ui, tr("Работает поверх любого окна, в том числе из трея.", "Works over any window, including from the tray."));
                 },
                 |ui| {
                     if capturing {
-                        if k::ghost_button(ui, "Отмена").clicked() {
+                        if k::ghost_button(ui, tr("Отмена", "Cancel")).clicked() {
                             self.hotkey.cancel_capture();
                         }
-                    } else if k::ghost_button(ui, "Изменить").clicked() {
+                    } else if k::ghost_button(ui, tr("Изменить", "Change")).clicked() {
                         self.hotkey.start_capture();
                     }
                 },
@@ -43,7 +44,7 @@ impl TvoiceApp {
             ui.add_space(t::SM);
             if capturing {
                 ui.label(
-                    RichText::new("Нажмите нужное сочетание — можно с кнопкой мыши")
+                    RichText::new(tr("Нажмите нужное сочетание — можно с кнопкой мыши", "Press the combination you want — a mouse button works too"))
                         .size(t::T_BODY)
                         .color(t::PRIMARY),
                 );
@@ -63,7 +64,8 @@ impl TvoiceApp {
                 ui.add_space(t::XS);
                 ui.label(
                     RichText::new(
-                        "Обычная клавиша без модификаторов будет срабатывать при наборе текста.",
+                        tr("Обычная клавиша без модификаторов будет срабатывать при наборе текста.",
+                   "A plain key with no modifiers will fire while you type."),
                     )
                     .size(t::T_LABEL)
                     .color(t::WARN),
@@ -74,13 +76,13 @@ impl TvoiceApp {
 
     fn mode_card(&mut self, ui: &mut egui::Ui) {
         k::card(ui, |ui| {
-            k::heading(ui, "Как диктовать");
+            k::heading(ui, tr("Как диктовать", "How to dictate"));
             ui.add_space(t::SM);
 
             if k::switch_row(
                 ui,
                 &mut self.streaming_enabled,
-                "Текст появляется во время речи",
+                tr("Текст появляется во время речи", "Text appears while you speak"),
                 "Хоткей работает переключателем: нажал — говоришь — нажал. \
                  Выключено: держишь клавишу, отпустил — текст вставился целиком.",
             ) {
@@ -90,8 +92,9 @@ impl TvoiceApp {
             if k::switch_row(
                 ui,
                 &mut self.insert_enabled,
-                "Вставлять текст в активное окно",
-                "Выключено — текст только показывается здесь, никуда не вставляется.",
+                tr("Вставлять текст в активное окно", "Type text into the active window"),
+                tr("Выключено — текст только показывается здесь, никуда не вставляется.",
+                "Off — text is only shown here and is not typed anywhere."),
             ) {
                 self.dirty = true;
             }
@@ -100,10 +103,11 @@ impl TvoiceApp {
 
     fn paste_card(&mut self, ui: &mut egui::Ui) {
         k::card(ui, |ui| {
-            k::heading(ui, "Способ вставки");
+            k::heading(ui, tr("Способ вставки", "Insertion method"));
             k::hint(
                 ui,
-                "Через буфер обмена — надёжно везде, прежнее содержимое возвращается.",
+                tr("Через буфер обмена — надёжно везде, прежнее содержимое возвращается.",
+                "Via the clipboard — reliable everywhere, the previous content is restored."),
             );
             ui.add_space(t::XS);
             {
@@ -152,18 +156,19 @@ impl TvoiceApp {
     /// Индикатор диктовки: где показывать, какого размера, и как он выглядит.
     fn hud_card(&mut self, ui: &mut egui::Ui) {
         k::card(ui, |ui| {
-            k::heading(ui, "Индикатор диктовки");
+            k::heading(ui, tr("Индикатор диктовки", "Dictation indicator"));
             k::hint(
                 ui,
-                "Небольшой значок, который виден во время записи поверх всех окон.",
+                tr("Небольшой значок, который виден во время записи поверх всех окон.",
+                "A small badge shown on top of all windows while recording."),
             );
             ui.add_space(t::SM);
 
             k::row(
                 ui,
                 |ui| {
-                    ui.label(RichText::new("Место на экране").size(t::T_BODY));
-                    k::hint(ui, "Углы и середины сторон — на том мониторе, где вы работаете.");
+                    ui.label(RichText::new(tr("Место на экране", "Position on screen")).size(t::T_BODY));
+                    k::hint(ui, tr("Углы и середины сторон — на том мониторе, где вы работаете.", "Corners and edge midpoints, on the monitor you are working on."));
                 },
                 |ui| {
                     let w = ui.available_width();
@@ -188,8 +193,8 @@ impl TvoiceApp {
             k::row(
                 ui,
                 |ui| {
-                    ui.label(RichText::new("Размер").size(t::T_BODY));
-                    k::hint(ui, "От 60% до 220% базового.");
+                    ui.label(RichText::new(tr("Размер", "Size")).size(t::T_BODY));
+                    k::hint(ui, tr("От 60% до 220% базового.", "From 60% to 220% of the base size."));
                 },
                 |ui| {
                     let slider = egui::Slider::new(
@@ -231,7 +236,7 @@ impl TvoiceApp {
                     ui.add(egui::Image::from_texture(&*texture).fit_to_original_size(1.0));
                     ui.add_space(t::BASE);
                     ui.label(
-                        RichText::new(format!("{w}×{h} точек · {:.0}%", self.hud_scale * 100.0))
+                        RichText::new(format!("{w}×{h} {} · {:.0}%", tr("точек", "px"), self.hud_scale * 100.0))
                             .size(t::T_LABEL_SM)
                             .color(t::MUTED),
                     );

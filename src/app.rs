@@ -92,6 +92,8 @@ pub struct TvoiceApp {
     /// Запускаться вместе с Windows. В `config.json` не хранится — истина в реестре,
     /// см. `autostart`.
     pub(crate) autostart: bool,
+    /// Язык интерфейса (не путать с языком распознавания `lang`).
+    pub(crate) ui_lang: crate::lang::Lang,
     /// Где показывать индикатор диктовки.
     pub(crate) hud_anchor: crate::overlay::Anchor,
     /// Размер индикатора: 1.0 — базовый.
@@ -184,6 +186,7 @@ impl TvoiceApp {
             first_frame: true,
             start_in_tray: cfg.start_in_tray,
             autostart: crate::autostart::is_enabled(),
+            ui_lang: cfg.ui_lang(),
             hud_anchor: crate::overlay::Anchor::from_id(&cfg.hud_anchor),
             hud_scale: cfg.hud_scale,
             hud_texture: None,
@@ -191,6 +194,7 @@ impl TvoiceApp {
             was_capturing: false,
             was_downloading_engine: false,
         };
+        crate::lang::set(app.ui_lang);
         crate::inject::set_mode(app.paste_mode);
         crate::inject::set_char_delay_us(app.char_delay_us);
         crate::overlay::set_anchor(crate::overlay::Anchor::from_id(&cfg.hud_anchor));
@@ -243,6 +247,7 @@ impl TvoiceApp {
             paste_mode: self.paste_mode,
             char_delay_us: self.char_delay_us,
             start_in_tray: self.start_in_tray,
+            ui_lang: self.ui_lang.id().to_string(),
             hud_anchor: self.hud_anchor.id().to_string(),
             hud_scale: self.hud_scale,
         };

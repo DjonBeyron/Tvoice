@@ -8,10 +8,13 @@
 Press a key, speak, and the text lands in whatever window you were typing in.
 Nothing leaves your machine.
 
-[![Latest release](https://img.shields.io/github/v/release/DjonBeyron/Tvoice?label=version&color=7c5cff)](https://github.com/DjonBeyron/Tvoice/releases/latest)
-[![Download for Windows](https://img.shields.io/badge/download-Windows%20installer-2ea043?logo=windows&logoColor=white)](https://github.com/DjonBeyron/Tvoice/releases/latest)
+### [![Download for Windows](https://img.shields.io/github/v/release/DjonBeyron/Tvoice?label=%E2%AC%87%20DOWNLOAD%20FOR%20WINDOWS&labelColor=2ea043&color=1f6feb&style=for-the-badge&logo=windows&logoColor=white)](https://github.com/DjonBeyron/Tvoice/releases/latest)
+
+Free · offline · no account — installer, no administrator rights needed
+
 [![CI](https://github.com/DjonBeyron/Tvoice/actions/workflows/ci.yml/badge.svg)](https://github.com/DjonBeyron/Tvoice/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Interface: RU / EN](https://img.shields.io/badge/interface-RU%20%2F%20EN-7c5cff)](#usage)
 
 **[Русская версия](README.ru.md)**
 
@@ -76,7 +79,7 @@ want them gone too.
 
 ## First run
 
-1. Open **Settings → Models**.
+1. Open **Settings → Engine and models**.
 2. Press **Download engine** — fetches a whisper.cpp build, with CUDA support if your
    machine has an NVIDIA GPU.
 3. Pick a model and download it:
@@ -93,12 +96,18 @@ want them gone too.
 
 ## Usage
 
-**Hotkey.** `Ctrl + Alt + Space` by default. Change it in **Settings → Hotkeys**: press
+**Hotkey.** `Ctrl + Alt + Space` by default. Change it in **Settings → Input**: press
 *Set*, then hold the combination you want. Mouse buttons are accepted.
 
 **Streaming mode** (the default) makes the hotkey a **toggle** — press to start, press
 again to stop. Hold-to-talk is not used here on purpose: the held keys would leak their
 characters into the target window.
+
+**Interface language.** Russian or English, switched in **Settings → Microphone and system
+→ Interface language** and applied immediately, without a restart. The installer asks for a
+language at the start and the program opens in it; if no choice was ever made, it follows the
+Windows display language. This is separate from the *recognition* language on the Dictation
+screen — the language you speak.
 
 **Indicator.** A small pill near the caret pulses with your voice. Position and size are
 configurable.
