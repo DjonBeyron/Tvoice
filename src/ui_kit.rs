@@ -45,10 +45,26 @@ pub fn card<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
             .inner_margin(egui::Margin::same(t::MD))
             .show(ui, |ui| {
                 ui.set_width(inner);
+                clip_to_self(ui, inner);
                 add(ui)
             })
             .inner
     })
+}
+
+/// Сузить область отсечки до содержимого самой карточки.
+///
+/// Строки и чипы внутри меряют ширину по отсечке (см. `row`), а она до сих пор была
+/// отсечкой КОЛОНКИ. Поэтому чип в правом верхнем углу дотягивался до края колонки, то есть
+/// ровно до границы карточки, и обрезался ею. Сузив отсечку, мы заодно даём вложенным
+/// элементам верную меру: дальше своей карточки они не потянутся.
+fn clip_to_self(ui: &mut Ui, inner: f32) {
+    let clip = ui.clip_rect();
+    let left = ui.max_rect().left();
+    ui.set_clip_rect(egui::Rect::from_min_max(
+        egui::pos2(left, clip.top()),
+        egui::pos2((left + inner).min(clip.right()), clip.bottom()),
+    ));
 }
 
 /// Обёртка фиксированной ширины вокруг карточки.
@@ -100,6 +116,7 @@ pub fn card_selected<R>(ui: &mut Ui, selected: bool, add: impl FnOnce(&mut Ui) -
             .inner_margin(egui::Margin::same(t::SM))
             .show(ui, |ui| {
                 ui.set_width(inner);
+                clip_to_self(ui, inner);
                 add(ui)
             })
             .inner
@@ -165,27 +182,38 @@ pub fn divider(ui: &mut Ui) {
 /// разные по росту элементы на одной оси всё равно смотрятся вразнобой.
 pub const PILL_H: f32 = 22.0;
 
-/// Чип состояния: точка + подпись. Состояние читается формой и цветом сразу.
+/// Чип состояния: точка + подпись.
+///
+/// Размер считаем сами и рисуем в отведённый прямоугольник, а не собираем из виджетов
+/// внутри рамки. Раскладка egui давала здесь выбор из трёх зол, все проверены: с нулевым
+/// запрошенным размером чип вылезал за карточку и обрезался, с `with_layout` растягивался
+/// на всю правую половину строки, с `horizontal` наследовал правостороннее направление и
+/// точка уезжала за текст. С готовым прямоугольником ни одного из этих вопросов нет.
 pub fn chip(ui: &mut Ui, text: &str, color: Color32) {
-    egui::Frame::none()
-        .fill(color.linear_multiply(0.12))
-        .stroke(Stroke::new(1.0_f32, color.linear_multiply(0.35)))
-        .rounding(Rounding::same(t::R_LG))
-        .inner_margin(egui::Margin::symmetric(t::XS, t::BASE))
-        .show(ui, |ui| {
-            // Нулевой запрошенный размер + явное направление: иначе чип наследует
-            // правостороннюю раскладку (точка уезжает за текст) и растягивается
-            // на всю свободную ширину, выдавливая соседний заголовок.
-            ui.allocate_ui_with_layout(
-                Vec2::ZERO,
-                egui::Layout::left_to_right(egui::Align::Center),
-                |ui| {
-                    dot(ui, color, 5.0);
-                    ui.add_space(t::BASE);
-                    ui.label(RichText::new(text).size(t::T_LABEL_SM).color(color));
-                },
-            );
-        });
+    let galley = ui.painter().layout_no_wrap(
+        text.to_owned(),
+        egui::FontId::proportional(t::T_LABEL_SM),
+        color,
+    );
+    let dot_r = 2.5;
+    let pad = t::XS;
+    let gap = t::BASE + 1.0;
+    let h = PILL_H;
+    let w = pad * 2.0 + dot_r * 2.0 + gap + galley.size().x;
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(w, h), Sense::hover());
+    let round = Rounding::same(h / 2.0);
+    let p = ui.painter();
+    p.rect_filled(rect, round, color.linear_multiply(0.12));
+    p.rect_stroke(rect, round, Stroke::new(1.0_f32, color.linear_multiply(0.35)));
+    // Точка — по оптическому центру букв, как и в чипе шапки (см. `chip_on_line`).
+    let ty = rect.center().y - galley.size().y / 2.0;
+    let ink_cy = ty + galley.mesh_bounds.center().y;
+    p.circle_filled(egui::pos2(rect.left() + pad + dot_r, ink_cy), dot_r, color);
+    p.galley(
+        egui::pos2(rect.left() + pad + dot_r * 2.0 + gap, ty),
+        galley,
+        color,
+    );
 }
 
 /// Чип состояния, нарисованный по центру заданной линии; возвращает ширину.
