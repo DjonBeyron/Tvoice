@@ -37,16 +37,49 @@ pub fn hint(ui: &mut Ui, text: &str) {
 
 /// Карточка: основная единица компоновки на всех экранах.
 pub fn card<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
-    egui::Frame::none()
-        .fill(t::SURFACE)
-        .stroke(Stroke::new(1.0_f32, t::OUTLINE.linear_multiply(0.45)))
-        .rounding(Rounding::same(t::R_MD))
-        .inner_margin(egui::Margin::same(t::MD))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            add(ui)
-        })
-        .inner
+    boxed(ui, t::MD, |ui, inner| {
+        egui::Frame::none()
+            .fill(t::SURFACE)
+            .stroke(Stroke::new(1.0_f32, t::OUTLINE.linear_multiply(0.45)))
+            .rounding(Rounding::same(t::R_MD))
+            .inner_margin(egui::Margin::same(t::MD))
+            .show(ui, |ui| {
+                ui.set_width(inner);
+                add(ui)
+            })
+            .inner
+    })
+}
+
+/// Обёртка фиксированной ширины вокруг карточки.
+///
+/// Без неё вложенная карточка получала места БОЛЬШЕ, чем есть у родителя: замер на экране
+/// настроек дал строку с правым краем 748 при родителе до 668. Карточка выезжала за
+/// колонку, и её резала защитная отсечка — снаружи это выглядело как обрубленные кнопки и
+/// чипы без правого края. `Frame` берёт место из `available_rect_before_wrap` родителя, а
+/// тот после `set_width` оказывался шире, чем следует; явная обёртка это пресекает.
+fn boxed<R>(ui: &mut Ui, margin: f32, add: impl FnOnce(&mut Ui, f32) -> R) -> R {
+    // Ширину ограничиваем ещё и областью отсечки. `available_width` по ходу отрисовки
+    // раздувается: замер показал, как родитель вырос с 40..668 до 40..760, а колонка —
+    // с 24..684 до 24..776. Причину роста найти не удалось, а отсечка колонки остаётся
+    // верной всё время, поэтому меряем по ней — карточка не вылезает за колонку, и её
+    // перестаёт обрубать.
+    let limit = (ui.clip_rect().right() - ui.next_widget_position().x).max(0.0);
+    let w = ui.available_width().min(limit).max(0.0);
+    let inner = (w - 2.0 * margin).max(0.0);
+    // Прямоугольник задаём ЖЁСТКО, а не «желаемым размером». `allocate_ui_with_layout`
+    // отдаёт родителю фактически занятое место, а `set_width` внутри фрейма расширяет Ui —
+    // рост уходил наружу и раздувал родителя для следующих карточек: замер показал, как
+    // колонка по ходу отрисовки выросла с 24..684 до 24..776, а внешняя карточка — с
+    // 40..668 до 40..760. Отсюда и обрубленные кнопки: карточка считала себя шире колонки
+    // и попадала под защитную отсечку.
+    let top_left = ui.next_widget_position();
+    let rect = egui::Rect::from_min_size(top_left, Vec2::new(w, ui.available_height().max(0.0)));
+    ui.allocate_ui_at_rect(rect, |ui| {
+        ui.set_max_width(w);
+        add(ui, inner)
+    })
+    .inner
 }
 
 /// Карточка с выделенной рамкой — для выбранного варианта.
@@ -59,16 +92,18 @@ pub fn card_selected<R>(ui: &mut Ui, selected: bool, add: impl FnOnce(&mut Ui) -
             Stroke::new(1.0_f32, t::OUTLINE.linear_multiply(0.45)),
         )
     };
-    egui::Frame::none()
-        .fill(fill)
-        .stroke(stroke)
-        .rounding(Rounding::same(t::R_MD))
-        .inner_margin(egui::Margin::same(t::SM))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            add(ui)
-        })
-        .inner
+    boxed(ui, t::SM, |ui, inner| {
+        egui::Frame::none()
+            .fill(fill)
+            .stroke(stroke)
+            .rounding(Rounding::same(t::R_MD))
+            .inner_margin(egui::Margin::same(t::SM))
+            .show(ui, |ui| {
+                ui.set_width(inner);
+                add(ui)
+            })
+            .inner
+    })
 }
 
 /// Строка «слева содержимое, справа действие» — типовая компоновка настроек.
@@ -78,7 +113,9 @@ pub fn card_selected<R>(ui: &mut Ui, selected: bool, add: impl FnOnce(&mut Ui) -
 /// широкое содержимое раздвигало область, та отдавала больше ширины, карточка росла
 /// и уезжала за край окна. Здесь расти нечему — сумма половин всегда равна строке.
 pub fn row<R>(ui: &mut Ui, left: impl FnOnce(&mut Ui), right: impl FnOnce(&mut Ui) -> R) -> R {
-    let total = ui.available_width();
+    let total = (ui.clip_rect().right() - ui.next_widget_position().x)
+        .min(ui.available_width())
+        .max(0.0);
     let right_w = (total * 0.42).min(250.0).max(0.0);
     let left_w = (total - right_w - t::SM).max(0.0);
     ui.horizontal(|ui| {
@@ -95,7 +132,10 @@ pub fn row<R>(ui: &mut Ui, left: impl FnOnce(&mut Ui), right: impl FnOnce(&mut U
         // кнопка повисала посреди карточки вместо правого края. Выравнивание
         // `right_to_left` + `Align::Min` прижимает её к правому ВЕРХНЕМУ углу — там её и
         // ищут глазами, когда слева несколько строк описания.
-        let rest = ui.available_width();
+        // По той же причине, что и в `boxed`: `available_width` раздувается, отсечка — нет.
+        let rest = (ui.clip_rect().right() - ui.next_widget_position().x)
+            .min(ui.available_width())
+            .max(0.0);
         ui.allocate_ui_with_layout(
             Vec2::new(rest, 0.0),
             egui::Layout::right_to_left(egui::Align::Min),
